@@ -1,5 +1,4 @@
 Author: Danny Holstein
-email: dgholstein@gmail.com
 
 These VIs provide C++-based DLL access to SQL-based databases. The VIs and development files are included in this package.
 
