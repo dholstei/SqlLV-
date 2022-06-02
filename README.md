@@ -1,2 +1,23 @@
-# SqlLV-
-LabVIEW VIs to provide C++-based DLL access to SQL-based databases
+# SqlLV++
+**Author**: Danny Holstein
+
+These VIs provide C++-based DLL access to SQL-based databases. The VIs and development files are included in this package.
+
+This library supports lossless data insertion/retrieval, meaning "(double) 1.0/3.0" will go in and be retrieved at full IEEE 64 bit precision, no conversion to/from ASCII.  As well, BLOBS will be easier, since LabVIEW and C++ std::string doesn't distinguish the 8-bit chars as ASCII that needs escaping.
+
+Error checking is fairly good, C++ try/catch structures are used to catch API (connection/parsing, etcetera) messages, data and codes (stored as class members).  As well, there are plenty of checks for NULL references and empty input data sets.  All the objects are tracked in a C++ list, so the user won't suffer a SEGFAULT if wiring in a reference not to the DB, corruption/overwriting of the object is also checked
+
+NOTES:
+
+**Version 2.0**: June 1, 2022
+  Since functionality is common to sql_LV, I'm starting at 2.0, as if it's a complete, from-scratch rewrite of the original library, which it is.  Though it has only support for MySQL currently, and only Servers compatible with Connector 8
+
+	Attached Linux library (SO) has been statically linked against Connector/C++
+
+**Prerequisites**:
+	LabView 7.1+
+	MySQL Connector/C++
+
+64-bit:
+	You're on your own -- I only have worked with 32 bit versions of LabView.  Contact me if you have difficulty, I'll help where I can.
+
