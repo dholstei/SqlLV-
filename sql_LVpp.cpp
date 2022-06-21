@@ -1,7 +1,7 @@
 #include "pch.h"
-// #define MYCON   //  MySQL C Connector
-// #define CPPCON  //  MySQL Connector/C++
-#define ODBCCON //  ODBC
+// #define MYAPI   //  MySQL C Connector
+// #define MYCPPAPI  //  MySQL Connector/C++
+#define ODBCAPI //  ODBC
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -14,7 +14,9 @@
 #else
 #include <windows.h>
 typedef unsigned int uint;
+typedef unsigned char u_char;
 typedef unsigned short u_int16_t;
+#include <string>
 #endif
 
 using namespace std;
@@ -73,18 +75,18 @@ void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 
 #endif
 
-#ifdef MYCON
+#ifdef MYAPI
 #include "mysql_connection.h"
 #include "/usr/include/mysql/mysql.h"
 #endif
-#ifdef CPPCON
+#ifdef MYCPPAPI
 #include <cppconn/driver.h>
 #include <cppconn/exception.h>
 #include <cppconn/resultset.h>
 #include <cppconn/statement.h>
 #include <cppconn/prepared_statement.h>
 #endif
-#ifdef ODBCCON
+#ifdef ODBCAPI
 #include <sql.h>
 #include <sqlext.h>
 #define ODBC_ERROR(t, o, d) {\
@@ -97,12 +99,6 @@ void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 #define MAGIC 0x13131313  //  doesn't necessarily need to be unique to this, specific library
 //  the odds another library class will be exactly the same length are low
 
-#define CASE(xTD, cType) case  xTD:\
-          union {cType f; char c[sizeof(cType)];} xTD;\
-          xTD.f = in_data[i].xTD;\
-          (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
-          LV_strncpy((**results).elt[row * cols + i], xTD.c, sizeof(cType));
-
 class LvDbLib {       // LabVIEW MySQL Database class
 public:
     uint canary_begin = MAGIC; //  check for buffer overrun and that we didn't delete object
@@ -111,19 +107,19 @@ public:
     string errdata;   // data precipitating error
     string SQLstate;  // SQL state
     uint16_t type;    // RDMS type, see enum db_type
+    int StrBufLen;    // initialize to 256, set to zero (0) for blobs and indeterminate length string results
 
     union API
     {
-#ifdef MYCON
+#ifdef MYAPI
         struct tMY {
             MYSQL* con;           //  connection
             MYSQL_RES* query_results; //  result set
             MYSQL_STMT* stmt;          //  prepared statement
             MYSQL_BIND* bind;          //  API places data for the bound columns into these specified buffers
-            int StrBufLen;              //  initialize to 256, set to zero (0) for blobs and indeterminate length string results
         } my;  //  MySQL Connector
 #endif
-#ifdef CPPCON
+#ifdef MYCPPAPI
         struct tMYCPP {
             sql::Driver* driver;  //  driver
             sql::Connection* con; //  connection
@@ -131,7 +127,7 @@ public:
             sql::ResultSet* res;  //  result set
         } mycpp;  //  MySQL Connector/C++
 #endif
-#ifdef ODBCCON
+#ifdef ODBCAPI
         struct tODBC {
             SQLHENV     hEnv;
             SQLHDBC     hDbc;
@@ -149,18 +145,18 @@ public:
         case NULL:
             break;
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
         case SqlServer:
             break;
 #endif
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             break;
 #endif
@@ -178,7 +174,7 @@ public:
             case NULL:
                 break;
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
             case ODBC:
             case SqlServer:
                 SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &(api.odbc.hEnv));
@@ -190,7 +186,7 @@ public:
                 break;
 #endif
 
-#ifdef MYCON
+#ifdef MYAPI
             case MySQL:
                 if ((api.my.con = mysql_init(NULL)) == NULL)
                 {
@@ -201,10 +197,10 @@ public:
                 {
                     errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
                 }
-                api.my.StrBufLen = 256; break;
+                StrBufLen = 256; break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
             case MySQLpp:
                 try
                 {
@@ -232,13 +228,13 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
             mysql_close(api.my.con);
             break;
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
             SQLDisconnect(api.odbc.hDbc);
             SQLFreeHandle(SQL_HANDLE_DBC, api.odbc.hDbc);
@@ -246,7 +242,7 @@ public:
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             api.mycpp.con->close();
             delete api.mycpp.con; // delete api.mycpp.driver; <- something about it being virtual
@@ -268,20 +264,20 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
             return Execute("USE " + schema);
             break;
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
         case SqlServer:
             return Execute("USE " + schema);
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             if (api.mycpp.con == NULL) { errstr = "Connection closed"; errnum = -1; return -1; }
             try { api.mycpp.con->setSchema(schema); }
@@ -308,7 +304,7 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
 #if 0
@@ -325,29 +321,23 @@ public:
 #else
             if (!(api.my.stmt = mysql_stmt_init(api.my.con))) { errnum = -1; errstr = "Out of memory"; return -1; }
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) //  Prepare statement
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
             int param_count; param_count = mysql_stmt_param_count(api.my.stmt); api.my.bind = new MYSQL_BIND[param_count];
             if (mysql_stmt_execute(api.my.stmt))                                //  Execute
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
             if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))                //  bind results
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;}
 #endif
             break;
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
             errnum = -1; errstr = "Unsupported RDBMS";
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             if (api.mycpp.con == NULL) { errstr = "Connection closed"; return -1; }
             try {
@@ -377,7 +367,7 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
             if (mysql_real_query(api.my.con, query.c_str(), query.length()))
@@ -391,7 +381,7 @@ public:
             break;
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
         case SqlServer:
             if (!api.odbc.hDbc) { errnum = -1; errstr = "No DB connection"; return -1; }
@@ -405,7 +395,7 @@ public:
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             if (api.mycpp.con == NULL) { errstr = "Connection closed"; return -1; }
             try {
@@ -435,7 +425,13 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
+#define CASE(xTD, cType) case  xTD:\
+          union {cType f; char c[sizeof(cType)];} xTD;\
+          xTD.f = in_data[i].xTD;\
+          (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
+          LV_strncpy((**results).elt[row * cols + i], xTD.c, sizeof(cType));
+
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
             api.my.stmt = mysql_stmt_init(api.my.con);
@@ -495,8 +491,8 @@ public:
                         bind[i].buffer_length = str_length; bind[i].is_null = 0; bind[i].length = &str_length;
                         break;
                     default:
-                    {errstr = "Data type (" + to_string(ColsTD[i]) + ") not supported"; return -1; }
-                    break;
+                        {errstr = "Data type (" + to_string(ColsTD[i]) + ") not supported"; return -1; }
+                        break;
                     }
                 }
                 if ((errnum = mysql_stmt_bind_param(api.my.stmt, bind)) != 0)
@@ -512,15 +508,75 @@ public:
             ans = j; mysql_stmt_close(api.my.stmt); delete bind;
             {errno = 0; errstr = "SUCCESS"; return ans; }
             break;
+#undef CASE
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
+#define CASE(LVt, SQLt, SQLCt, Ct) \
+    case LVt:\
+        union { Ct f; char c[sizeof(Ct)]; } LVt ## _;\
+        std::memcpy(LVt ## _.c, val.c_str(), sizeof(Ct));\
+        rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, \
+            SQLt, SQLCt, sizeof(Ct), 0, &LVt ## _.f, 0, &cbValue);\
+        if (rc == SQL_ERROR) \
+            {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);\
+             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+
         case ODBC:
+        case SqlServer:
             if (api.odbc.hDbc == NULL) { errno = -1; errstr = "Connection closed"; return -1; }
+            if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
+                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
+            int rc; rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*) query.c_str(), SQL_NTS);
+            if (rc == SQL_ERROR) 
+                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query); SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+            for (j = 0; j < rows; j++)
+            {
+                for (i = 0; i < cols; i++)
+                {
+                    SQLINTEGER cbValue; cbValue = SQL_NTS;
+                    string val = v[j * cols + i];
+                    switch (ColsTD[i]) {    //  NOTE: We may want to use SQL_C_DEFAULT instead of specific C type
+                        CASE(Boolean, SQL_C_BIT, SQL_BIT, u_char)
+                            break;
+                        CASE(U8, SQL_C_UTINYINT, SQL_TINYINT, u_char)
+                            break;
+                        CASE(I8, SQL_C_STINYINT, SQL_TINYINT, char)
+                            break;
+                        CASE(U16, SQL_C_USHORT, SQL_SMALLINT, int16)
+                            break;
+                        CASE(I16, SQL_C_SSHORT, SQL_SMALLINT, uInt16)
+                            break;
+                        CASE(U32, SQL_C_ULONG, SQL_INTEGER, int32)
+                            break;
+                        CASE(I32, SQL_C_SLONG, SQL_INTEGER, uint32_t)
+                            break;
+                        CASE(SGL, SQL_C_FLOAT, SQL_REAL, float)
+                            break;
+                        CASE(DBL, SQL_C_DOUBLE, SQL_DOUBLE, double)
+                            break;
+                        case String:
+                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, 50, 0, (char*) val.c_str(), val.length(), &cbValue);
+                            if (rc == SQL_ERROR) 
+                                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
+                                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+                            break;
+                        default:
+                            {errstr = "Data type (" + to_string(ColsTD[i]) + ") not supported"; return -1; }
+                            break;
+                    }
+                }
+                rc = SQLExecute(api.odbc.hStmt);
+                if (rc == SQL_ERROR) 
+                    {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
+                     SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+           }
+            SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); ans = j;
             break;
+#undef CASE
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             if (api.mycpp.con == NULL) { errno = -1; errstr = "Connection closed"; return -1; }
             try {
@@ -589,7 +645,7 @@ public:
         case NULL:
             break;
 
-#ifdef MYCON
+#ifdef MYAPI
         case MySQL:
 #if 0
             MYSQL_ROW r; int* lengths;  //  typedef char **MYSQL_ROW; /* return data as array of strings */
@@ -692,9 +748,9 @@ public:
                     break;
                 case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
                     break;
-                    in_data[i].str = (char*) new char[api.my.StrBufLen];
+                    in_data[i].str = (char*) new char[StrBufLen];
                     api.my.bind[i].buffer = (char*)in_data[i].str;
-                    api.my.bind[i].buffer_length = api.my.StrBufLen;
+                    api.my.bind[i].buffer_length = StrBufLen;
                 default:
                     delete length; delete is_null; delete error; delete api.my.bind; delete in_data;
                     errnum = -1; errstr = "Unsupported MySQL type: " + to_string(fields[i].type);
@@ -764,7 +820,7 @@ public:
                         case  String:
                         default:
                             (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(0);
-                            if (length[i] > api.my.StrBufLen)
+                            if (length[i] > StrBufLen)
                             {
                                 // char* data; data = new char[length[i]];
                                 delete[] in_data[i].str; in_data[i].str = new char[length[i]];
@@ -796,12 +852,12 @@ public:
             break;
 #endif
 
-#ifdef ODBCCON
+#ifdef ODBCAPI
         case ODBC:
             break;
 #endif
 
-#ifdef CPPCON
+#ifdef MYCPPAPI
         case MySQLpp:
             try {
                 sql::ResultSet* res = api.mycpp.res; //  sql::ResultSet
@@ -933,13 +989,11 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         return LvDbObj->errnum;
     }
 
-#ifdef MYCON
     int SetBufLen(LvDbLib* LvDbObj, int len) { //  set string buffer length, set to zero (0) for blobs and other large strings for dynamic allocation
         if (!IsObj(LvDbObj)) return -1;
-        if (LvDbObj->type == LvDbObj->MySQL) LvDbObj->api.my.StrBufLen = len;
+        LvDbObj->StrBufLen = len;
         return 0;
     }
-#endif
 
     int Execute(LvDbLib* LvDbObj, LStrHandle query) { //  run query against connection and return num rows affected
         if (!IsObj(LvDbObj)) return -1;
@@ -970,6 +1024,12 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
         if (!IsObj(LvDbObj)) return -1;
         myObjs.remove(LvDbObj); delete LvDbObj; return 0;
+    }
+
+    int Type(LvDbLib* LvDbObj) { //  close DB connection and free memory
+        if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
+        if (!IsObj(LvDbObj)) return -1;
+        return LvDbObj->type;
     }
 
     void GetError(LvDbLib* LvDbObj, tLvDbErr* error) { //  get error info from LvDbLib object properties
