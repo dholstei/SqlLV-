@@ -990,16 +990,16 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         else return rows;
     }
 
+    int Type(LvDbLib* LvDbObj) { //  get DB API type
+        if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
+        if (!IsObj(LvDbObj)) return -1;
+        return LvDbObj->type;
+    }
+
     int CloseDB(LvDbLib* LvDbObj) { //  close DB connection and free memory
         if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
         if (!IsObj(LvDbObj)) return -1;
         myObjs.remove(LvDbObj); delete LvDbObj; return 0;
-    }
-
-    int Type(LvDbLib* LvDbObj) { //  close DB connection and free memory
-        if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
-        if (!IsObj(LvDbObj)) return -1;
-        return LvDbObj->type;
     }
 
     void GetError(LvDbLib* LvDbObj, tLvDbErr* error) { //  get error info from LvDbLib object properties
