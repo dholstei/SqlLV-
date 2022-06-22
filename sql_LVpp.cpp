@@ -1,6 +1,18 @@
-#include "pch.h"
-// #define MYAPI   //  MySQL C Connector
-// #define MYCPPAPI  //  MySQL Connector/C++
+// 
+// sql_LV++ DSO/DLL library 
+// Author: Danny Holstein
+// Desc:   Interface between LabVIEW and database APIs (MySQL, ODBC, etc; Connectors)
+//         Mostly through LV data-to-flattened string, so that the data can be passed back and 
+//         forth efficiently and without printf/sscanf() formating (lossless)
+//  
+//         The C++ class maintains the connection/environment and includes database API 
+//         error information for workbench-type/enhanced DB debugging.  Also, we check for
+//         NULL references and keep track of all the objects, which means we won't suffer 
+//         SEGFAULTS if we wire in the wrong, or closed reference. Canaries are used on both 
+//         ends of the object to make sure nothing has been clobbered.
+// 
+#define MYAPI   //  MySQL C Connector
+#define MYCPPAPI  //  MySQL Connector/C++
 #define ODBCAPI //  ODBC
 
 #include <stdlib.h>
@@ -13,6 +25,7 @@
 #include <arpa/inet.h>
 #else
 #include <windows.h>
+#include "pch.h"
 typedef unsigned int uint;
 typedef unsigned char u_char;
 typedef unsigned short u_int16_t;
@@ -22,7 +35,7 @@ typedef unsigned short u_int16_t;
 using namespace std;
 
 #if 1 //  LabView declarations
-#include "extcode.h" //  LabVIEW external code
+#include "/usr/local/lv71/cintools/extcode.h" //  LabVIEW external code
 
 typedef struct {
     long errnum;
@@ -296,7 +309,7 @@ public:
         return errnum;
     }
 
-    int Query(string query) {  //  run query against connection and put results in res
+    int Query(string query, int cols) {  //  run query against connection and put results in res
         errnum = -1; errdata = query;
         if (query.length() < 1) { errstr = "Query string may not be blank"; return -1; }
         switch (type)
@@ -319,14 +332,16 @@ public:
 
             errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
 #else
-            if (!(api.my.stmt = mysql_stmt_init(api.my.con))) { errnum = -1; errstr = "Out of memory"; return -1; }
+            if (!(api.my.stmt = mysql_stmt_init(api.my.con)))
+                {errnum = -1; errstr = "Out of memory"; return -1; }
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) //  Prepare statement
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-            int param_count; param_count = mysql_stmt_param_count(api.my.stmt); api.my.bind = new MYSQL_BIND[param_count];
-            if (mysql_stmt_execute(api.my.stmt))                                //  Execute
+            api.my.bind = new MYSQL_BIND[cols];
+            if (mysql_stmt_execute(api.my.stmt))                    //  Execute
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-            if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))                //  bind results
+            if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))    //  bind results
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;}
+            errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
 #endif
             break;
 #endif
@@ -426,20 +441,20 @@ public:
             break;
 
 #ifdef MYAPI
-#define CASE(xTD, cType) case  xTD:\
-          union {cType f; char c[sizeof(cType)];} xTD;\
-          xTD.f = in_data[i].xTD;\
-          (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
-          LV_strncpy((**results).elt[row * cols + i], xTD.c, sizeof(cType));
+#define CASE(xTD, cType, sType) case  xTD:\
+    union { cType f; char c[sizeof(cType)]; } xTD ## _;\
+    memcpy(xTD ## _.c, val.c_str(), sizeof(cType));\
+    bind[i].buffer_type = sType; bind[i].buffer = (char*)&xTD ## _.f;\
+    bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+
 
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
             api.my.stmt = mysql_stmt_init(api.my.con);
             if (api.my.stmt == NULL) { errstr = "Out of memory"; return -1; }
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length()))
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
+                 mysql_stmt_close(api.my.stmt); return -1;}
             MYSQL_BIND* bind; bind = new MYSQL_BIND[cols];
 
             for (j = 0; j < rows; j++)
@@ -449,40 +464,19 @@ public:
                     string val = v[j * cols + i];
                     switch (ColsTD[i])
                     {
-                    case I8:
                     case U8:
                     case Boolean:
-                        union { u_char f; char c[sizeof(char)]; } U8_;
-                        U8_.c[0] = val[0];
-                        bind[i].buffer_type = MYSQL_TYPE_TINY; bind[i].buffer = (char*)&U8_.f;
-                        bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+                    CASE(I8, char, MYSQL_TYPE_TINY)
                         break;
-                    case I16:
                     case U16:
-                        union { short f; char c[sizeof(short)]; } I16_;
-                        memcpy(I16_.c, val.c_str(), sizeof(short));
-                        bind[i].buffer_type = MYSQL_TYPE_SHORT; bind[i].buffer = (char*)&I16_.f;
-                        bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+                    CASE(I16, short, MYSQL_TYPE_SHORT)
                         break;
-                        break;
-                    case I32:
                     case U32:
-                        union { int f; char c[sizeof(int)]; } I32_;
-                        memcpy(I32_.c, val.c_str(), sizeof(int));
-                        bind[i].buffer_type = MYSQL_TYPE_LONG; bind[i].buffer = (char*)&I32_.f;
-                        bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+                    CASE(I32, int, MYSQL_TYPE_LONG)
                         break;
-                    case SGL:
-                        union { float f; char c[sizeof(float)]; } SGL_;
-                        memcpy(SGL_.c, val.c_str(), sizeof(float));
-                        bind[i].buffer_type = MYSQL_TYPE_FLOAT; bind[i].buffer = (char*)&SGL_.f;
-                        bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+                    CASE (SGL, float, MYSQL_TYPE_FLOAT)
                         break;
-                    case DBL:
-                        union { double f; char c[sizeof(double)]; } DBL_;
-                        memcpy(DBL_.c, val.c_str(), sizeof(double));
-                        bind[i].buffer_type = MYSQL_TYPE_DOUBLE; bind[i].buffer = (char*)&DBL_.f;
-                        bind[i].is_null = 0; bind[i].length = 0;  //  numerics don't need length
+                    CASE (DBL, double, MYSQL_TYPE_DOUBLE)
                         break;
                     case String:
                         char* str_data; str_data = (char*)val.c_str();
@@ -515,9 +509,9 @@ public:
 #define CASE(LVt, SQLt, SQLCt, Ct) \
     case LVt:\
         union { Ct f; char c[sizeof(Ct)]; } LVt ## _;\
-        std::memcpy(LVt ## _.c, val.c_str(), sizeof(Ct));\
+        memcpy(LVt ## _.c, val.c_str(), sizeof(Ct));\
         rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, \
-            SQLt, SQLCt, sizeof(Ct), 0, &LVt ## _.f, 0, &cbValue);\
+            SQLt, SQLCt, sizeof(Ct), 0, &LVt ## _.f, 0, (SQLLEN*) &cbValue);\
         if (rc == SQL_ERROR) \
             {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);\
              SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
@@ -556,7 +550,8 @@ public:
                         CASE(DBL, SQL_C_DOUBLE, SQL_DOUBLE, double)
                             break;
                         case String:
-                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, 50, 0, (char*) val.c_str(), val.length(), &cbValue);
+                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, 
+                                    SQL_C_BINARY, SQL_VARBINARY, 50, 0, (char*) val.c_str(), val.length(), (SQLLEN*) &cbValue);
                             if (rc == SQL_ERROR) 
                                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                                  SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
@@ -714,14 +709,16 @@ public:
             }
             mysql_free_result(api.my.query_results);
 #else
+#define CASE(xTD, cType) case  xTD:\
+          union {cType f; char c[sizeof(cType)];} xTD ## _;\
+          xTD ## _.f = in_data[i].xTD;\
+          (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
+          LV_strncpy((**results).elt[row * cols + i], xTD ## _.c, sizeof(cType));
+
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
             if (cols != mysql_num_fields(api.my.query_results))
-            {
-                errnum = -1; errstr = "Data column number mismatch"; return false;
-            }
+                {errnum = -1; errstr = "Data column number mismatch"; return false;}
 
             /* Fetch result set meta information */
             MYSQL_FIELD* fields; fields = mysql_fetch_fields(api.my.query_results);
@@ -768,54 +765,29 @@ public:
                 row++;
                 for (int i = 0; i < cols; i++)
                 {
-                    // NOTE:  NULL DB results map only to LStr NULL string -> LStr NULL variant
-                    //        The only LV TD that has a something we can use for NULL is float/double (NaN)
-                    //        In the re-conversion to Numeric/String, NULL Variants should be an error state
+                // NOTE:  NULL DB results map only to LStr NULL string -> LStr NULL variant
+                //        The only LV TD that has a something we can use for NULL is float/double (NaN)
+                //        In the re-conversion to Numeric/String, NULL Variants should be an error state
 
                     if (!is_null[i])
                     {
                         switch ((**types).TypeDescriptor[i])
                         {
                         case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
-                        case  U8:
-                            union { u_char f; char c[sizeof(char)]; } U8;
-                            U8.f = in_data[i].U8;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                            LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
                             break;
-                        case  I8:
-                            union { char f; char c[sizeof(char)]; } I8;
-                            I8.f = in_data[i].I8;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                            LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
+                        CASE(I8, char)
                             break;
-                            CASE(U16, u_int16_t)
-                                break;
-                            CASE(I16, int16_t)
-                                break;
-                        case  U32:
-                            union { u_int32_t f; char c[sizeof(u_int32_t)]; } U32;
-                            U32.f = in_data[i].U32;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(u_int32_t));
-                            LV_strncpy((**results).elt[row * cols + i], U32.c, sizeof(u_int32_t));
+                        CASE(U16, u_int16_t)
                             break;
-                        case  I32:
-                            union { int32 f; char c[sizeof(int32)]; } I32;
-                            I32.f = in_data[i].I32;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(int32));
-                            LV_strncpy((**results).elt[row * cols + i], I32.c, sizeof(int32));
+                        CASE(I16, int16_t)
                             break;
-                        case  SGL:
-                            union { float f; char c[sizeof(float)]; } SGL;
-                            SGL.f = in_data[i].SGL;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(float));
-                            LV_strncpy((**results).elt[row * cols + i], SGL.c, sizeof(float));
+                        CASE(U32, u_int32_t)
                             break;
-                        case  DBL:
-                            union { double f; char c[sizeof(double)]; } DBL;
-                            DBL.f = in_data[i].DBL;
-                            (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(double));
-                            LV_strncpy((**results).elt[row * cols + i], DBL.c, sizeof(double));
+                        CASE(I32, int32)
+                            break;
+                        CASE(SGL, float)
+                            break;
+                        CASE(DBL, double)
                             break;
                         case  String:
                         default:
@@ -830,9 +802,8 @@ public:
                                 }
                             }
                             else
-                            {
-                                LV_str_cp((**results).elt[row * cols + i], string(in_data[i].str, length[i]));
-                            }
+                                LV_str_cp((**results).elt[row * cols + i], 
+                                          string(in_data[i].str, length[i]));
                             break;
                         }
                     }
@@ -844,9 +815,8 @@ public:
             delete length; delete is_null; delete error; delete api.my.bind; delete in_data;
             mysql_free_result(api.my.query_results);
             if (mysql_stmt_close(api.my.stmt))
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
+#undef CASE
 #endif
             errnum = 0; errdata = ""; errstr = "SUCCESS"; ans = true;
             break;
@@ -1015,7 +985,7 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
     int Query(LvDbLib* LvDbObj, LStrHandle query, TypesHdl types, ResultSetHdl results) { //  run query against connection and return result set in flattened strings
         int rows, cols = (**types).dimSize; if (cols == 0) return 0;  //  number of columns, return if no data columns requested  
         if (!IsObj(LvDbObj)) return -1;
-        if ((rows = LvDbObj->Query(LStrString(query))) < 0) return -1; //  std::string version of SQL query
+        if ((rows = LvDbObj->Query(LStrString(query), cols)) < 0) return -1; //  std::string version of SQL query
         if (!LvDbObj->GetResults(rows, cols, types, results)) return -1;
         else return rows;
     }
