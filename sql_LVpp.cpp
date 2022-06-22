@@ -11,31 +11,33 @@
 //         SEGFAULTS if we wire in the wrong, or closed reference. Canaries are used on both 
 //         ends of the object to make sure nothing has been clobbered.
 // 
-#define MYAPI   //  MySQL C Connector
-#define MYCPPAPI  //  MySQL Connector/C++
+#include "pch.h"
+
+//#define MYAPI   //  MySQL C Connector
+//#define MYCPPAPI  //  MySQL Connector/C++
 #define ODBCAPI //  ODBC
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <iostream>     // std::cout
-#include <list>
 
 #ifndef WIN
 #include <arpa/inet.h>
+#include "/usr/local/lv71/cintools/extcode.h" //  LabVIEW external code
 #else
 #include <windows.h>
-#include "pch.h"
+#include "extcode.h" //  LabVIEW external code
 typedef unsigned int uint;
 typedef unsigned char u_char;
 typedef unsigned short u_int16_t;
-#include <string>
 #endif
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string>
+#include <iostream>     // std::cout
+#include <list>
 
 using namespace std;
 
 #if 1 //  LabView declarations
-#include "/usr/local/lv71/cintools/extcode.h" //  LabVIEW external code
 
 typedef struct {
     long errnum;
@@ -180,7 +182,7 @@ public:
         }
 
         type = t; errnum = 0; errstr = "SUCCESS";
-        if (ConnectionString.length() < 1) { errnum = -1; errstr = "Connection string may not be blank"; }
+        if (ConnectionString.length() < 1) {errnum = -1; errstr = "Connection string may not be blank"; }
         else {
             switch (type)
             {
@@ -202,14 +204,10 @@ public:
 #ifdef MYAPI
             case MySQL:
                 if ((api.my.con = mysql_init(NULL)) == NULL)
-                {
-                    errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); break;
-                }
+                    {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); break;}
                 if (mysql_real_connect(api.my.con, ConnectionString.c_str(),
                     user.c_str(), pw.c_str(), db.c_str(), 0, "/run/mysql/mysql.sock", 0) == NULL)
-                {
-                    errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
-                }
+                    {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);}
                 StrBufLen = 256; break;
 #endif
 
@@ -322,25 +320,22 @@ public:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
 #if 0
             if (mysql_real_query(api.my.con, query.c_str(), query.length()))
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
             if ((api.my.query_results = mysql_store_result(api.my.con)) == NULL)
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
 
             errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
 #else
             if (!(api.my.stmt = mysql_stmt_init(api.my.con)))
-                {errnum = -1; errstr = "Out of memory"; return -1; }
+                {errnum = -1; errstr = "Out of memory"; return -1;}
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) //  Prepare statement
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
             api.my.bind = new MYSQL_BIND[cols];
             if (mysql_stmt_execute(api.my.stmt))                    //  Execute
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
             if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))    //  bind results
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;}
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
+                 mysql_stmt_close(api.my.stmt); return -1;}
             errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
 #endif
             break;
@@ -386,13 +381,9 @@ public:
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
             if (mysql_real_query(api.my.con, query.c_str(), query.length()))
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); ans = -1;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); ans = -1;}
             else
-            {
-                errnum = 0; errdata = ""; ans = mysql_affected_rows(api.my.con);
-            }
+                {errnum = 0; errdata = ""; ans = mysql_affected_rows(api.my.con);}
             break;
 #endif
 
@@ -402,10 +393,10 @@ public:
             if (!api.odbc.hDbc) { errnum = -1; errstr = "No DB connection"; return -1; }
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
-            int rc; rc = SQLExecDirect(api.odbc.hStmt, (SQLCHAR*) query.c_str(), SQL_NTS);
-            if (rc == SQL_ERROR) 
+            int rc; rc = SQLExecDirect(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
+            if (rc == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query); ans = -1;}
-            else SQLRowCount(api.odbc.hStmt, (SQLLEN*) &ans); 
+            else SQLRowCount(api.odbc.hStmt, (SQLLEN*)&ans);
             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt);
             break;
 #endif
@@ -453,8 +444,10 @@ public:
             api.my.stmt = mysql_stmt_init(api.my.con);
             if (api.my.stmt == NULL) { errstr = "Out of memory"; return -1; }
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length()))
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
-                 mysql_stmt_close(api.my.stmt); return -1;}
+            {
+                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
+                mysql_stmt_close(api.my.stmt); return -1;
+            }
             MYSQL_BIND* bind; bind = new MYSQL_BIND[cols];
 
             for (j = 0; j < rows; j++)
@@ -474,9 +467,9 @@ public:
                     case U32:
                     CASE(I32, int, MYSQL_TYPE_LONG)
                         break;
-                    CASE (SGL, float, MYSQL_TYPE_FLOAT)
+                    CASE(SGL, float, MYSQL_TYPE_FLOAT)
                         break;
-                    CASE (DBL, double, MYSQL_TYPE_DOUBLE)
+                    CASE(DBL, double, MYSQL_TYPE_DOUBLE)
                         break;
                     case String:
                         char* str_data; str_data = (char*)val.c_str();
@@ -490,14 +483,10 @@ public:
                     }
                 }
                 if ((errnum = mysql_stmt_bind_param(api.my.stmt, bind)) != 0)
-                {
-                    errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;
-                }
+                    {errstr = mysql_error(api.my.con); mysql_stmt_close(api.my.stmt); return -1;}
                 if (mysql_stmt_execute(api.my.stmt) != 0)
-                {
-                    errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
-                    mysql_stmt_close(api.my.stmt); return -1;
-                }
+                    {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
+                     mysql_stmt_close(api.my.stmt); return -1;}
             }
             ans = j; mysql_stmt_close(api.my.stmt); delete bind;
             {errno = 0; errstr = "SUCCESS"; return ans; }
@@ -520,10 +509,13 @@ public:
         case SqlServer:
             if (api.odbc.hDbc == NULL) { errno = -1; errstr = "Connection closed"; return -1; }
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
-                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
-            int rc; rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*) query.c_str(), SQL_NTS);
-            if (rc == SQL_ERROR) 
-                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query); SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+            {
+                ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;
+            }
+            int rc; rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
+            if (rc == SQL_ERROR)
+                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
+                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
             for (j = 0; j < rows; j++)
             {
                 for (i = 0; i < cols; i++)
@@ -550,22 +542,25 @@ public:
                         CASE(DBL, SQL_C_DOUBLE, SQL_DOUBLE, double)
                             break;
                         case String:
-                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, 
-                                    SQL_C_BINARY, SQL_VARBINARY, 50, 0, (char*) val.c_str(), val.length(), (SQLLEN*) &cbValue);
-                            if (rc == SQL_ERROR) 
+                            int strlen; strlen = val.length();
+                            SQLCHAR *str; str = new SQLCHAR[strlen + 1]; memcpy(str, &val[0], strlen); str[strlen] = 0;
+                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,
+                                SQL_C_CHAR, SQL_CHAR, strlen + 1, 0, (SQLCHAR*) str, strlen, &cbValue);
+                            if (rc == SQL_ERROR)
                                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                                  SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
                             break;
+                        case Array: //  how we pass binary data (not SQL_NTS/null-terminated str)
                         default:
                             {errstr = "Data type (" + to_string(ColsTD[i]) + ") not supported"; return -1; }
                             break;
                     }
                 }
                 rc = SQLExecute(api.odbc.hStmt);
-                if (rc == SQL_ERROR) 
+                if (rc == SQL_ERROR)
                     {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                      SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
-           }
+            }
             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); ans = j;
             break;
 #undef CASE
@@ -716,7 +711,7 @@ public:
           LV_strncpy((**results).elt[row * cols + i], xTD ## _.c, sizeof(cType));
 
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
+                { errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
             if (cols != mysql_num_fields(api.my.query_results))
                 {errnum = -1; errstr = "Data column number mismatch"; return false;}
 
@@ -757,17 +752,15 @@ public:
                 }
             }
             if (mysql_stmt_bind_result(api.my.stmt, api.my.bind))
-            {
-                errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;
-            }
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
 
             while (!mysql_stmt_fetch(api.my.stmt)) {  //  Fetch all rows
                 row++;
                 for (int i = 0; i < cols; i++)
                 {
-                // NOTE:  NULL DB results map only to LStr NULL string -> LStr NULL variant
-                //        The only LV TD that has a something we can use for NULL is float/double (NaN)
-                //        In the re-conversion to Numeric/String, NULL Variants should be an error state
+                    // NOTE:  NULL DB results map only to LStr NULL string -> LStr NULL variant
+                    //        The only LV TD that has a something we can use for NULL is float/double (NaN)
+                    //        In the re-conversion to Numeric/String, NULL Variants should be an error state
 
                     if (!is_null[i])
                     {
@@ -775,20 +768,20 @@ public:
                         {
                         case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
                             break;
-                        CASE(I8, char)
-                            break;
-                        CASE(U16, u_int16_t)
-                            break;
-                        CASE(I16, int16_t)
-                            break;
-                        CASE(U32, u_int32_t)
-                            break;
-                        CASE(I32, int32)
-                            break;
-                        CASE(SGL, float)
-                            break;
-                        CASE(DBL, double)
-                            break;
+                            CASE(I8, char)
+                                break;
+                            CASE(U16, u_int16_t)
+                                break;
+                            CASE(I16, int16_t)
+                                break;
+                            CASE(U32, u_int32_t)
+                                break;
+                            CASE(I32, int32)
+                                break;
+                            CASE(SGL, float)
+                                break;
+                            CASE(DBL, double)
+                                break;
                         case  String:
                         default:
                             (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(0);
@@ -797,13 +790,11 @@ public:
                                 // char* data; data = new char[length[i]];
                                 delete[] in_data[i].str; in_data[i].str = new char[length[i]];
                                 int retval; if ((retval = mysql_stmt_fetch_column(api.my.stmt, api.my.bind, i, 0)) != 0)
-                                {
-                                    errnum = retval; errstr = mysql_error(api.my.con); return false;
-                                }
+                                    {errnum = retval; errstr = mysql_error(api.my.con); return false;}
                             }
                             else
-                                LV_str_cp((**results).elt[row * cols + i], 
-                                          string(in_data[i].str, length[i]));
+                                LV_str_cp((**results).elt[row * cols + i],
+                                    string(in_data[i].str, length[i]));
                             break;
                         }
                     }
