@@ -5,16 +5,20 @@
 //         Mostly through LV data-to-flattened string, so that the data can be passed back and 
 //         forth efficiently and without printf/sscanf() formating (lossless)
 //  
-//         The C++ class maintains the connection/environment and includes database API 
+//         The C++ class maintains the connection, environment, and includes database API 
 //         error information for workbench-type/enhanced DB debugging.  Also, we check for
 //         NULL references and keep track of all the objects, which means we won't suffer 
 //         SEGFAULTS if we wire in the wrong, or closed reference. Canaries are used on both 
 //         ends of the object to make sure nothing has been clobbered.
 // 
-// #include "pch.h"
+//  NOTE:  At some point, I plan to write a library to convert LabVIEW Variant to C++ std::any *,
+//         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
+//         languages.  Of course, the calling language would also have to delete these when through.
+//
+ #include "pch.h"
 
-#define MYAPI       //  MySQL C Connector
-#define MYCPPAPI    //  MySQL Connector/C++
+//#define MYAPI       //  MySQL C Connector
+//#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 
 
@@ -36,6 +40,7 @@ typedef unsigned short u_int16_t;
 #include <iostream>     // std::cout
 #include <list>
 #include <sstream>
+#include <memory>
 
 using namespace std;
 
@@ -113,8 +118,8 @@ void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
                 }
 #endif
 
-#define MAGIC 0x13131313  //  doesn't necessarily need to be unique to this, specific library
-//  the odds another library class will be exactly the same length are low
+#define MAGIC 0x13131313    //  doesn't necessarily need to be unique to this, specific library
+                            //  the odds another library class will be exactly the same length are low
 
 class LvDbLib {       // LabVIEW MySQL Database class
 public:
@@ -179,7 +184,7 @@ public:
 #endif
 
         default:
-            errnum = -1; errstr = "Unsupported RDBMS";
+            errnum = -1; errstr = "Unsupported RDBMS, type = " + to_string(t);
             break;
         }
 
@@ -229,7 +234,7 @@ public:
 #endif
 
             default:
-                errnum = -1; errstr = "Unsupported RDBMS";
+                errnum = -1; errstr = "Unsupported RDBMS, type = " + to_string(t);
                 break;
             }
         }
@@ -502,7 +507,7 @@ public:
 #define CASE(LVt, SQLt, SQLCt, Ct) \
     case LVt:\
         union { Ct f; char c[sizeof(Ct)]; } LVt ## _;\
-        memcpy(LVt ## _.c, val.c_str(), sizeof(Ct));\
+        memcpy(LVt ## _.c, (*val).c_str(), sizeof(Ct));\
         rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT, \
             SQLt, SQLCt, sizeof(Ct), 0, &LVt ## _.f, 0, (SQLLEN*) &cbValue);\
         if (rc == SQL_ERROR) \
@@ -513,9 +518,7 @@ public:
         case SqlServer:
             if (api.odbc.hDbc == NULL) { errno = -1; errstr = "Connection closed"; return -1; }
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
-            {
-                ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;
-            }
+                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
             int rc; rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
             if (rc == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
@@ -524,8 +527,8 @@ public:
             {
                 for (i = 0; i < cols; i++)
                 {
-                    SQLINTEGER cbValue; cbValue = SQL_NTS;
-                    string val = v[j * cols + i];
+                    SQLINTEGER cbValue; 
+                    string *val = &v[j * cols + i];
                     switch (ColsTD[i]) {    //  NOTE: We may want to use SQL_C_DEFAULT instead of specific C type
                         CASE(Boolean, SQL_C_BIT, SQL_BIT, u_char)
                             break;
@@ -546,15 +549,19 @@ public:
                         CASE(DBL, SQL_C_DOUBLE, SQL_DOUBLE, double)
                             break;
                         case String:
-                            int strlen; strlen = val.length();
-                            SQLCHAR *str; str = new SQLCHAR[strlen + 1]; memcpy(str, &val[0], strlen); str[strlen] = 0;
-                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,
-                                SQL_C_CHAR, SQL_CHAR, strlen + 1, 0, (SQLCHAR*) str, strlen, (SQLLEN*) &cbValue);
+                        case Array: //  how we pass binary data (not SQL_NTS/null-terminated str)
+                            if (ColsTD[i] == String)
+                               {cbValue = SQL_NTS;
+                                rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_CHAR, 
+                                    SQL_LONGVARCHAR, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);}
+                            else
+                               {cbValue = (*val).length();
+                                rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_BINARY, 
+                                     SQL_VARBINARY, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);}
                             if (rc == SQL_ERROR)
                                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
-                                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+                                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
                             break;
-                        case Array: //  how we pass binary data (not SQL_NTS/null-terminated str)
                         default:
                             {errstr = "Data type (" + to_string(ColsTD[i]) + ") not supported"; return -1; }
                             break;
@@ -972,13 +979,17 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
     int UpdatePrepared(LvDbLib* LvDbObj, LStrHandle query, DataSetHdl data, uint16_t ColsTD[]) { //  run prepared statement and return num rows affected
         if (!IsObj(LvDbObj)) return -1;
         int rows = (**data).dimSizes[0]; int cols = (**data).dimSizes[1];
-        string* vals = new string[rows * cols];
+        string* vals = new string[rows * cols]; //  replace with unique_ptr
         for (int j = 0; j < rows; j++)
             for (int i = 0; i < cols; i++) {
                 LStrHandle s = (**data).elt[j * cols + i];
-                vals[j * cols + i] = LStrString(s);
+                if (ColsTD[i] == LvDbObj->String)
+                    vals[j * cols + i] = LStrString(s) + '\0';
+                else
+                    vals[j * cols + i] = LStrString(s);
             }
-        return LvDbObj->UpdatePrepared(LStrString(query), vals, rows, cols, ColsTD);
+        int NumRows = LvDbObj->UpdatePrepared(LStrString(query), vals, rows, cols, ColsTD);
+        delete[] vals; return NumRows;
     }
 
     int Query(LvDbLib* LvDbObj, LStrHandle query, TypesHdl types, ResultSetHdl results) { //  run query against connection and return result set in flattened strings
@@ -990,13 +1001,11 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
     }
 
     int Type(LvDbLib* LvDbObj) { //  get DB API type
-        if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
         if (!IsObj(LvDbObj)) return -1;
         return LvDbObj->type;
     }
 
     int CloseDB(LvDbLib* LvDbObj) { //  close DB connection and free memory
-        if (LvDbObj == NULL) { ObjectErrStr = "NULL DB object"; ObjectErr = true; return -1; }
         if (!IsObj(LvDbObj)) return -1;
         myObjs.remove(LvDbObj); delete LvDbObj; return 0;
     }
