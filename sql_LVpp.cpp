@@ -11,19 +11,21 @@
 //         SEGFAULTS if we wire in the wrong, or closed reference. Canaries are used on both 
 //         ends of the object to make sure nothing has been clobbered.
 // 
-#include "pch.h"
+// #include "pch.h"
 
-//#define MYAPI   //  MySQL C Connector
-//#define MYCPPAPI  //  MySQL Connector/C++
-#define ODBCAPI //  ODBC
+#define MYAPI       //  MySQL C Connector
+#define MYCPPAPI    //  MySQL Connector/C++
+#define ODBCAPI     //  ODBC
 
 
 #ifndef WIN
 #include <arpa/inet.h>
 #include "/usr/local/lv71/cintools/extcode.h" //  LabVIEW external code
+#include <string.h>
 #else
 #include <windows.h>
 #include "extcode.h" //  LabVIEW external code
+#include <string>
 typedef unsigned int uint;
 typedef unsigned char u_char;
 typedef unsigned short u_int16_t;
@@ -31,9 +33,9 @@ typedef unsigned short u_int16_t;
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string>
 #include <iostream>     // std::cout
 #include <list>
+#include <sstream>
 
 using namespace std;
 
@@ -472,9 +474,11 @@ public:
                     CASE(DBL, double, MYSQL_TYPE_DOUBLE)
                         break;
                     case String:
-                        char* str_data; str_data = (char*)val.c_str();
+                    case Array: //  how we pass BLOB data (not null-terminated str)
+                        char* str_data; str_data = (char*) val.c_str();
                         long unsigned str_length; str_length = val.length();
-                        bind[i].buffer_type = MYSQL_TYPE_STRING; bind[i].buffer = (char*)str_data;
+                        bind[i].buffer_type = (ColsTD[i] != Array? MYSQL_TYPE_STRING: MYSQL_TYPE_BLOB);
+                        bind[i].buffer = (char*)str_data;
                         bind[i].buffer_length = str_length; bind[i].is_null = 0; bind[i].length = &str_length;
                         break;
                     default:
@@ -545,7 +549,7 @@ public:
                             int strlen; strlen = val.length();
                             SQLCHAR *str; str = new SQLCHAR[strlen + 1]; memcpy(str, &val[0], strlen); str[strlen] = 0;
                             rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,
-                                SQL_C_CHAR, SQL_CHAR, strlen + 1, 0, (SQLCHAR*) str, strlen, &cbValue);
+                                SQL_C_CHAR, SQL_CHAR, strlen + 1, 0, (SQLCHAR*) str, strlen, (SQLLEN*) &cbValue);
                             if (rc == SQL_ERROR)
                                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                                  SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
@@ -601,6 +605,10 @@ public:
                             break;
                         case String:
                             pstmt->setString(i + 1, val);
+                            break;
+                        case Array: //  how we pass BLOB data (not null-terminated str)
+                            std::stringstream *stream; stream->write(& val[0], val.length());
+                            pstmt->setBlob(i + 1, stream);
                             break;
                         default:
                             break;
