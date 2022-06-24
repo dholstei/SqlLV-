@@ -41,6 +41,7 @@ typedef unsigned short u_int16_t;
 #include <list>
 #include <sstream>
 #include <memory>
+#include <variant>
 
 using namespace std;
 
@@ -129,7 +130,7 @@ public:
     string errdata;   // data precipitating error
     string SQLstate;  // SQL state
     uint16_t type;    // RDMS type, see enum db_type
-    int StrBufLen;    // initialize to 256, set to zero (0) for blobs and indeterminate length string results
+    int StrBufLen = 256;    // initialize to 256, set to zero (0) for blobs and indeterminate length string results
 
     union API
     {
@@ -150,10 +151,12 @@ public:
         } mycpp;  //  MySQL Connector/C++
 #endif
 #ifdef ODBCAPI
+#define VAR_TYPES char, long, unsigned long, float, double, char*, string
         struct tODBC {
             SQLHENV     hEnv;
             SQLHDBC     hDbc;
             SQLHSTMT    hStmt;
+            std::variant<VAR_TYPES>* hBind;    //  array of any
         } odbc;  //  ODBC
 #endif
     } api;
@@ -254,6 +257,7 @@ public:
 
 #ifdef ODBCAPI
         case ODBC:
+        case SqlServer:
             SQLDisconnect(api.odbc.hDbc);
             SQLFreeHandle(SQL_HANDLE_DBC, api.odbc.hDbc);
             SQLFreeHandle(SQL_HANDLE_ENV, api.odbc.hEnv);
@@ -343,14 +347,25 @@ public:
             if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))    //  bind results
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
                  mysql_stmt_close(api.my.stmt); return -1;}
-            errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
+            errnum = 0; errdata = ""; return 0;
 #endif
             break;
 #endif
 
 #ifdef ODBCAPI
         case ODBC:
-            errnum = -1; errstr = "Unsupported RDBMS";
+        case SqlServer:
+            {
+            int rc;
+            rc = SQLAllocStmt(api.odbc.hDbc, &(api.odbc.hStmt));
+            if (rc == SQL_ERROR) {ODBC_ERROR(SQL_HANDLE_DBC, api.odbc.hDbc, query); return -1;}
+            rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
+            if (rc == SQL_ERROR)
+                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
+                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+            api.odbc.hBind = new std::variant<VAR_TYPES>[cols];
+            return 0;
+            }
             break;
 #endif
 
@@ -549,15 +564,17 @@ public:
                         CASE(DBL, SQL_C_DOUBLE, SQL_DOUBLE, double)
                             break;
                         case String:
+                            cbValue = SQL_NTS;
+                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_CHAR, 
+                                SQL_LONGVARCHAR, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);
+                            if (rc == SQL_ERROR)
+                                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
+                                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
+                            break;
                         case Array: //  how we pass binary data (not SQL_NTS/null-terminated str)
-                            if (ColsTD[i] == String)
-                               {cbValue = SQL_NTS;
-                                rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_CHAR, 
-                                    SQL_LONGVARCHAR, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);}
-                            else
-                               {cbValue = (*val).length();
-                                rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_BINARY, 
-                                     SQL_VARBINARY, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);}
+                            cbValue = (*val).length();
+                            rc = SQLBindParameter(api.odbc.hStmt, i + 1, SQL_PARAM_INPUT,SQL_C_BINARY, 
+                                SQL_VARBINARY, (*val).length(), 0, (SQLCHAR*) &((*val)[0]), (*val).length(), (SQLLEN*) &cbValue);
                             if (rc == SQL_ERROR)
                                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                                     SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
@@ -638,13 +655,15 @@ public:
         return ans;
     }
 
-    bool GetResults(int rows, int cols, TypesHdl types, ResultSetHdl results) {  //  return results as LV flattened strings
+    bool GetResults(int *rows, int cols, TypesHdl types, ResultSetHdl results) {  //  return results as LV flattened strings
         bool ans = false;
         errnum = 0; errdata = "";
         int row = 0; //  row number
 
-        DSSetHandleSize(results, sizeof(int32) * 2 + rows * cols * sizeof(LStrHandle));
-        (**results).dimSizes[0] = rows; (**results).dimSizes[1] = cols;
+        if (*rows > 0)  //  we know the number of rows before hand, otherwise we need to dynamically allocate on fetches
+           {DSSetHandleSize(results, sizeof(int32) * 2 + *rows * cols * sizeof(LStrHandle));
+            (**results).dimSizes[0] = *rows; (**results).dimSizes[1] = cols;}
+
         switch (type)
         {
         case NULL:
@@ -652,78 +671,13 @@ public:
 
 #ifdef MYAPI
         case MySQL:
-#if 0
-            MYSQL_ROW r; int* lengths;  //  typedef char **MYSQL_ROW; /* return data as array of strings */
-            while ((r = mysql_fetch_row(api.my.query_results)) != NULL)
-            {
-                lengths = (int*)mysql_fetch_lengths(api.my.query_results);
-                for (int i = 0; i < cols; i++) {
-                    switch ((**types).TypeDescriptor[i])
-                    {
-                    case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
-                    case  U8:
-                        union { u_char f; char c[sizeof(char)]; } U8;
-                        U8.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                        LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
-                        break;
-                    case  I8:
-                        union { char f; char c[sizeof(char)]; } I8;
-                        I8.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                        LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
-                        break;
-                    case  U16:
-                        union { u_int16_t f; char c[sizeof(u_int16_t)]; } U16;
-                        U16.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(u_int16_t));
-                        LV_strncpy((**results).elt[row * cols + i], U16.c, sizeof(u_int16_t));
-                        break;
-                    case  I16:
-                        union { u_int16_t f; char c[sizeof(u_int16_t)]; } I16;
-                        I16.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(int16_t));
-                        LV_strncpy((**results).elt[row * cols + i], I16.c, sizeof(int16_t));
-                    case  U32:
-                        union { u_int32_t f; char c[sizeof(u_int32_t)]; } U32;
-                        U32.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(u_int32_t));
-                        LV_strncpy((**results).elt[row * cols + i], U32.c, sizeof(u_int32_t));
-                        break;
-                    case  I32:
-                        union { u_int32_t f; char c[sizeof(u_int32_t)]; } I32;
-                        I32.f = stoi(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(int32_t));
-                        LV_strncpy((**results).elt[row * cols + i], I32.c, sizeof(int32_t));
-                        break;
-                    case  SGL:
-                        union { float f; char c[sizeof(float)]; } SGL;
-                        SGL.f = stof(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(float));
-                        LV_strncpy((**results).elt[row * cols + i], SGL.c, sizeof(float));
-                        break;
-                    case  DBL:
-                        union { double f; char c[sizeof(double)]; } DBL;
-                        DBL.f = stod(string(r[i], lengths[i]));
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(double));
-                        LV_strncpy((**results).elt[row * cols + i], DBL.c, sizeof(double));
-                        break;
-                    case  String:
-                    default:  //  since we have length, we can trivially handle binary data/BLOBS
-                        (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(0);
-                        LV_str_cp((**results).elt[row * cols + i], string(r[i], lengths[i]));
-                        break;
-                    }
-                }
-                row++;
-            }
-            mysql_free_result(api.my.query_results);
-#else
+#if 1 // CASE MACRO
 #define CASE(xTD, cType) case  xTD:\
           union {cType f; char c[sizeof(cType)];} xTD ## _;\
           xTD ## _.f = in_data[i].xTD;\
           (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
           LV_strncpy((**results).elt[row * cols + i], xTD ## _.c, sizeof(cType));
+#endif 
 
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
                 { errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
@@ -823,13 +777,91 @@ public:
             if (mysql_stmt_close(api.my.stmt))
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
 #undef CASE
-#endif
             errnum = 0; errdata = ""; errstr = "SUCCESS"; ans = true;
             break;
 #endif
 
 #ifdef ODBCAPI
+#if 1   //  CASE() MACRO
+#define CASE(xTD, cType, sType)   case  xTD:\
+    api.odbc.hBind[i] = (cType) 0; DataLen = sizeof(cType);\
+    rc = SQLBindCol(api.odbc.hStmt, i + 1, sType, &(api.odbc.hBind[i]),\
+        sizeof(cType), &DataLen);\
+    if (rc == SQL_ERROR)\
+    {\
+        ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));\
+        SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;\
+    }
+#endif
         case ODBC:
+        case SqlServer:
+            int rc;
+            for (SQLUSMALLINT i = 0; i < cols; i++)
+            {
+                SQLLEN DataLen; int t = (**types).TypeDescriptor[i];
+                switch (t)
+                {
+                case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
+                case  I8:
+                CASE(U8, char, SQL_C_CHAR)
+                    break;
+                CASE(U32, unsigned long, SQL_C_ULONG)
+                    break;
+                CASE(I32, long, SQL_C_LONG)
+                    break;
+                CASE(SGL, float, SQL_C_FLOAT)
+                    break;
+                CASE(DBL, double, SQL_C_DOUBLE)
+                    break;
+                case String:
+                case Array: //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
+                    api.odbc.hBind[i] = (char*) new char[StrBufLen]; DataLen = sizeof(char*);
+                    rc = SQLBindCol(api.odbc.hStmt, i + 1, SQL_C_CHAR, &(api.odbc.hBind[i]),
+                        sizeof(char*), &DataLen);
+                    if (rc == SQL_ERROR)
+                    {
+                        ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));
+                        SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
+                    }
+                default:
+                    errno = -1; errstr = "Unsupported data type"; delete[] api.odbc.hBind; 
+                    delete api.odbc.hStmt; return false;
+                    break;
+                }
+
+            }
+#undef CASE
+
+            rc = SQLFetch(api.odbc.hStmt);
+            if (rc == SQL_ERROR)
+            {
+                ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "");
+                SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
+            }
+            while (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+            {
+                rc = SQLFetch(api.odbc.hStmt);
+                if (rc == SQL_ERROR)
+                {
+                    ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "");
+                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
+                }
+                //  allocate another row
+                DSSetHandleSize(results, sizeof(int32) * 2 + ++(*rows) * cols * sizeof(LStrHandle));
+                (**results).dimSizes[0] = *rows; (**results).dimSizes[1] = cols;
+                for (SQLUSMALLINT i = 0; i < cols; i++)
+                {
+                    SQLLEN DataLen; int t = (**types).TypeDescriptor[i];
+                    switch (t)
+                    {
+                    case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
+                    case  I8:
+                    default:
+                        break;
+                    }
+                }
+            }
+            ans = row;
             break;
 #endif
 
@@ -996,7 +1028,7 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         int rows, cols = (**types).dimSize; if (cols == 0) return 0;  //  number of columns, return if no data columns requested  
         if (!IsObj(LvDbObj)) return -1;
         if ((rows = LvDbObj->Query(LStrString(query), cols)) < 0) return -1; //  std::string version of SQL query
-        if (!LvDbObj->GetResults(rows, cols, types, results)) return -1;
+        if (!LvDbObj->GetResults(&rows, cols, types, results)) return -1;
         else return rows;
     }
 
