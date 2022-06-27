@@ -15,11 +15,13 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
- #include "pch.h"
+//  #include "pch.h"
 
-//#define MYAPI       //  MySQL C Connector
-//#define MYCPPAPI    //  MySQL Connector/C++
+#ifndef MYAPI
+#define MYAPI       //  MySQL C Connector
+// #define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
+#endif
 
 
 #ifndef WIN
@@ -99,10 +101,10 @@ void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 #endif
 
 #ifdef MYAPI
-#include "mysql_connection.h"
 #include "/usr/include/mysql/mysql.h"
 #endif
 #ifdef MYCPPAPI
+#include "mysql_connection.h"
 #include <cppconn/driver.h>
 #include <cppconn/exception.h>
 #include <cppconn/resultset.h>
@@ -156,7 +158,7 @@ public:
             SQLHENV     hEnv;
             SQLHDBC     hDbc;
             SQLHSTMT    hStmt;
-            std::variant<VAR_TYPES>* hBind;    //  array of any
+            std::variant<VAR_TYPES> *hBind;    //  array of any
         } odbc;  //  ODBC
 #endif
     } api;
@@ -795,7 +797,7 @@ public:
 #endif
         case ODBC:
         case SqlServer:
-            int rc;
+            int rc; api.odbc.hBind = new std::variant<VAR_TYPES> [cols];
             for (SQLUSMALLINT i = 0; i < cols; i++)
             {
                 SQLLEN DataLen; int t = (**types).TypeDescriptor[i];
@@ -824,21 +826,26 @@ public:
                         SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                     }
                 default:
-                    errno = -1; errstr = "Unsupported data type"; delete[] api.odbc.hBind; 
-                    delete api.odbc.hStmt; return false;
+                    for (SQLUSMALLINT k = 0; k < i; k++) delete &(api.odbc.hBind[k]);
+                    errno = -1; errstr = "Unsupported data type: " + to_string(t); delete[] api.odbc.hBind; 
+                    return false;
                     break;
                 }
 
             }
 #undef CASE
 
-            rc = SQLFetch(api.odbc.hStmt);
+#define CASE(xTD, cType) \
+     case  xTD:\
+            (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
+            LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), sizeof(cType));
+            row = 0; rc = SQLFetch(api.odbc.hStmt);
             if (rc == SQL_ERROR)
             {
                 ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "");
                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
             }
-            while (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)
+            while (rc  != SQL_NO_DATA)
             {
                 rc = SQLFetch(api.odbc.hStmt);
                 if (rc == SQL_ERROR)
@@ -847,8 +854,8 @@ public:
                     SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                 }
                 //  allocate another row
-                DSSetHandleSize(results, sizeof(int32) * 2 + ++(*rows) * cols * sizeof(LStrHandle));
-                (**results).dimSizes[0] = *rows; (**results).dimSizes[1] = cols;
+                DSSetHandleSize(results, sizeof(int32) * 2 + ++(row) * cols * sizeof(LStrHandle));
+                (**results).dimSizes[0] = row; (**results).dimSizes[1] = cols;
                 for (SQLUSMALLINT i = 0; i < cols; i++)
                 {
                     SQLLEN DataLen; int t = (**types).TypeDescriptor[i];
@@ -856,16 +863,37 @@ public:
                     {
                     case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
                     case  I8:
+                    CASE(U8, char)
+                        break;
+                    case I16:
+                    CASE(U16, u_int16_t)
+                        break;
+                    case I32:
+                    CASE(U32, u_int32_t)
+                        break;
+                    CASE(SGL, float)
+                        break;
+                    CASE(DBL, double)
+                        break;
                     default:
                         break;
                     }
                 }
             }
+#undef CASE            
+            for (SQLUSMALLINT i = 0; i < cols; i++) delete &(api.odbc.hBind[i]); delete[] api.odbc.hBind; 
             ans = row;
             break;
 #endif
 
 #ifdef MYCPPAPI
+#define CASE(xTD, cType, method) \
+     case  xTD:\
+            union { cType d; char str[sizeof(cType)]; } xTD ## _;\
+            xTD ## _.d = res->method(i + 1);\
+            (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
+            LV_strncpy((**results).elt[row * cols + i], xTD ## _.str, sizeof(cType));
+                            
         case MySQLpp:
             try {
                 sql::ResultSet* res = api.mycpp.res; //  sql::ResultSet
@@ -876,52 +904,21 @@ public:
                             switch ((**types).TypeDescriptor[i])
                             {
                             case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
-                            case  U8:
-                                union { u_char f; char c[sizeof(char)]; } U8;
-                                U8.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                                LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
+                            CASE(U8, u_char, getInt)
                                 break;
-                            case  I8:
-                                union { char f; char c[sizeof(char)]; } I8;
-                                I8.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(char));
-                                LV_strncpy((**results).elt[row * cols + i], U8.c, sizeof(char));
+                            CASE(I8, char, getInt)
                                 break;
-                            case  U16:
-                                union { u_int16_t f; char c[sizeof(u_int16_t)]; } U16;
-                                U16.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(u_int16_t));
-                                LV_strncpy((**results).elt[row * cols + i], U16.c, sizeof(u_int16_t));
+                            CASE(U16, u_int16_t, getInt)
                                 break;
-                            case  I16:
-                                union { u_int16_t f; char c[sizeof(u_int16_t)]; } I16;
-                                I16.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(int16_t));
-                                LV_strncpy((**results).elt[row * cols + i], I16.c, sizeof(int16_t));
-                            case  U32:
-                                union { u_int32_t f; char c[sizeof(u_int32_t)]; } U32;
-                                U32.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(u_int32_t));
-                                LV_strncpy((**results).elt[row * cols + i], U32.c, sizeof(u_int32_t));
+                            CASE(I16, int16_t, getInt)
                                 break;
-                            case  I32:
-                                union { u_int32_t f; char c[sizeof(u_int32_t)]; } I32;
-                                I32.f = res->getInt(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(int32_t));
-                                LV_strncpy((**results).elt[row * cols + i], I32.c, sizeof(int32_t));
+                            CASE(U32, u_int32_t, getInt)
                                 break;
-                            case  SGL:
-                                union { float f; char c[sizeof(float)]; } SGL;
-                                SGL.f = res->getDouble(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(float));
-                                LV_strncpy((**results).elt[row * cols + i], SGL.c, sizeof(float));
+                            CASE(I32, int32, getInt)
                                 break;
-                            case  DBL:
-                                union { double f; char c[sizeof(double)]; } DBL;
-                                DBL.f = res->getDouble(i + 1);
-                                (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + sizeof(double));
-                                LV_strncpy((**results).elt[row * cols + i], DBL.c, sizeof(double));
+                            CASE(SGL, float, getDouble)
+                                break;
+                            CASE(DBL, double, getDouble)
                                 break;
                             case  String:
                             default:
@@ -941,6 +938,7 @@ public:
 
             delete api.mycpp.res; delete api.mycpp.stmt;
             break;
+#undef CASE
 #endif
 
         default:
