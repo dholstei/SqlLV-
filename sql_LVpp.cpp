@@ -818,13 +818,12 @@ public:
                 case String:
                 case Array: //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
                     api.odbc.hBind[i] = (char*) new char[StrBufLen]; DataLen = sizeof(char*);
-                    rc = SQLBindCol(api.odbc.hStmt, i + 1, SQL_C_CHAR, &(api.odbc.hBind[i]),
-                        sizeof(char*), &DataLen);
                     if (rc == SQL_ERROR)
                     {
                         ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));
                         SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                     }
+                    break;
                 default:
                     for (SQLUSMALLINT k = 0; k < i; k++) delete &(api.odbc.hBind[k]);
                     errno = -1; errstr = "Unsupported data type: " + to_string(t); delete[] api.odbc.hBind; 
@@ -874,6 +873,15 @@ public:
                     CASE(SGL, float)
                         break;
                     CASE(DBL, double)
+                        break;
+                    case String:
+                    case Array:
+                       SQLLEN FldLen;
+                       while ((rc = SQLGetData(api.odbc.hStmt, 2, SQL_C_BINARY, (char*) &(api.odbc.hBind[i]),
+                                StrBufLen,  &FldLen)) != SQL_NO_DATA)
+                        {  
+                            (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));
+                        }
                         break;
                     default:
                         break;
