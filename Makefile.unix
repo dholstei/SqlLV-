@@ -8,37 +8,41 @@
 
 CC = gcc -g
 C++ = g++ -g
-F77 = g77
-MYSQL_LIB=/usr/lib/libmariadb.so.3
-#MYSQLCPP_LIB=/home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/lib/libmysqlcppconn.so
-MYSQLCPP_LIB=/home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/lib/libmysqlcppconn-static.a
-LABVIEW_LIB=/usr/local/lv71/AppLibs/liblvrt.so.7.1
-ODBC_LIB=/usr/lib/libodbc.so
-SDL_LIB=/usr/lib/libSDL2-2.0.so.0
-ifeq ($(ODBC),1)
-  CFLAGS = -m32 -fPIC -DHAVE_ODBC -Di686
-  LIBS = $(MYSQL_LIB) $(LABVIEW_LIB) $(ODBC_LIB)
-else
-  CFLAGS = -m32 -fPIC -Di686
-  CPPFLAGS = -m32 -D_GLIBCXX_USE_CXX11_ABI=0 
-  LIBS = $(MYSQL_LIB) $(LABVIEW_LIB) $(SDL_LIB)
+CFLAGS = -m32 -fPIC -Di686
+CXXFLAGS = -m32 -std=gnu++17 -lstdc++
+
+# LabVIEW
+INCLUDES := $(INCLUDES)  -I/usr/local/lv71/cintools
+LIBS := $(LIBS) /usr/local/lv71/AppLibs/liblvrt.so.7.1
+
+ifeq ($(ODBC),1)	# UnixODBC API
+	CXXFLAGS := $(CXXFLAGS) -DODBCAPI
+#	 INCLUDES := $(INCLUDES) -I/usr/include/
+	LIBS := $(LIBS) /usr/lib/libodbc.so
 endif
-OBJ = o
-SUFFIX = so
-INCLUDES = -I/usr/include/mysql/ -I/usr/local/lv71/cintools\
- -I/home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/include/jdbc/
+
+ifeq ($(MySQL),1)	# MySQL API
+	CXXFLAGS := $(CXXFLAGS) -DMYAPI
+	INCLUDES := $(INCLUDES) -I/usr/include/mysql/
+	LIBS := $(LIBS) /usr/lib/libmariadb.so.3
+endif
+
+ifeq ($(MySQLCPP),1)	# MySQL C++/Connector
+	CXXFLAGS := $(CXXFLAGS) -DMYCPPAPI
+	INCLUDES := $(INCLUDES)  -I/home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/include/jdbc/
+	LIBS := $(LIBS) /home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/lib/libmysqlcppconn-static.a
+#	MYSQLCPP_LIB=/home/danny/src/mysql-connector-c++-8.0.28-linux-glibc2.12-x86-32bit/lib/libmysqlcppconn.so
+	CXXFLAGS := $(CXXFLAGS) -D_GLIBCXX_USE_CXX11_ABI=0 
+endif
+
+SDL_LIB=/usr/lib/libSDL2-2.0.so.0
+
 #  DLLFLAGS = -shared -W1,-soname,$@
 DLLFLAGS = -shared -m32
 .SUFFIXES:
 .SUFFIXES: .c .cpp .o .so
 
 OBJECTS = sql_LV.$(OBJ)
-
-
-
-# This variable points to the directory containing the X libraries.
-
-LIBDIR = /usr/X11R6/lib
 
 .c:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
@@ -47,18 +51,19 @@ LIBDIR = /usr/X11R6/lib
 	$(CC) $(INCLUDES) -c $(CFLAGS) $<
 
 .cpp.o: 
-	$(C++) $(INCLUDES) -c $(CPPFLAGS) $<
+	$(C++) $(INCLUDES) -c $(CXXFLAGS) $<
 
 .c.obj: 
 	$(CC) $(INCLUDES) -c $(CFLAGS) $<
 
-all:    sql_LV.$(SUFFIX)
+all:    sql_LVpp.so
 
 sql_LVpp:	sql_LVpp.o
-	$(C++) $(CPPFLAGS) -o $@ $? $(MYSQLCPP_LIB) -ldl -lpthread -lresolv -lssl -lcrypto
+	$(C++) $(CXXFLAGS) -o $@ $? $(MYSQLCPP_LIB) -ldl -lpthread -lresolv -lssl -lcrypto
 
 sql_LVpp.so: sql_LVpp.cpp
-	$(C++) $(CPPFLAGS) -DLIB -shared -fPIC -o $@ $? $(INCLUDES) $(MYSQLCPP_LIB) -ldl -lpthread -lresolv -lssl -lcrypto
+	$(C++) $(CXXFLAGS) -shared -fPIC -o $@ $? $(INCLUDES) $(LIBS)\
+	 -ldl -lpthread -lresolv -lssl -lcrypto
 
 sql_LV.so:    $(OBJECTS)
 	$(CC) $(DLLFLAGS) -o $@ $(OBJECTS) $(LIBS)
@@ -73,6 +78,6 @@ clean:
 dist:
 	 tar cvfz sql_LV.tgz *.c *.h Makefile *.llb
 
-test:    sql_LV.$(SUFFIX)
-	 $(CC) test.c -o test sql_LV.$(SUFFIX)
+test:    sql_LVpp.so
+	 $(CC) $(CXXFLAGS) test.cpp -o test $<
 
