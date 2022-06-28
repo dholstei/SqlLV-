@@ -15,12 +15,12 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
-#include "pch.h"
+// #include "pch.h"
 
 #ifndef MYAPI
-//#define MYAPI       //  MySQL C Connector
+#define MYAPI       //  MySQL C Connector
 //#define MYCPPAPI    //  MySQL Connector/C++
-//#define ODBCAPI     //  ODBC
+#define ODBCAPI     //  ODBC
 #endif
 
 
@@ -39,6 +39,7 @@
     #include <arpa/inet.h>
     #include "/usr/local/lv71/cintools/extcode.h" //  LabVIEW external code
     #include <string.h>
+    typedef int errno_t;
 #endif
 
 #include <stdlib.h>
@@ -86,7 +87,12 @@ errno_t LV_str_cat(LStrHandle LV_string, string str)    //  concatenate C++ str 
     int n = (*LV_string)->cnt;
     DSSetHandleSize(LV_string, sizeof(int) + n + str.length());
     (*LV_string)->cnt = n + str.length();
+    #ifdef WIN
     return strncpy_s((char*)(*LV_string)->str + n, str.length(), &str[0], str.length());
+    #else
+    (void) strncpy((char*)(*LV_string)->str + n, &str[0], str.length());
+    return 0;
+    #endif
 }
 void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 {
@@ -656,7 +662,7 @@ public:
     }
 
     int GetResults(int *rows, int cols, TypesHdl types, ResultSetHdl results) {  //  return results as LV flattened strings
-        errnum = 0; errdata = "";
+        errnum = 0; errdata = ""; int rc;
         SQLLEN *DataLen; DataLen = new SQLLEN[cols];
         int row = 0; //  row number
 
@@ -673,10 +679,10 @@ public:
         case MySQL:
 #if 1 // CASE MACRO
 #define CASE(xTD, cType) case  xTD:\
-          union {cType f; char c[sizeof(cType)];} xTD ## _;\
-          xTD ## _.f = in_data[i].xTD;\
+          union {cType data; char str[sizeof(cType)];} xTD ## _;\
+          xTD ## _.data = in_data[i].xTD;\
           (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
-          LV_strncpy((**results).elt[row * cols + i], xTD ## _.c, sizeof(cType));
+          LV_strncpy((**results).elt[row * cols + i], xTD ## _.str, sizeof(cType));
 #endif 
 
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
@@ -708,10 +714,10 @@ public:
                     api.my.bind[i].buffer = (char*)&(in_data[i]);
                     break;
                 case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
-                    break;
                     in_data[i].str = (char*) new char[StrBufLen];
                     api.my.bind[i].buffer = (char*)in_data[i].str;
                     api.my.bind[i].buffer_length = StrBufLen;
+                    break;
                 default:
                     delete length; delete is_null; delete error; delete api.my.bind; delete in_data;
                     errnum = -1; errstr = "Unsupported MySQL type: " + to_string(fields[i].type);
@@ -721,9 +727,9 @@ public:
                 }
             }
             if (mysql_stmt_bind_result(api.my.stmt, api.my.bind))
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
 
-            while (!mysql_stmt_fetch(api.my.stmt)) {  //  Fetch all rows
+            while ((rc = mysql_stmt_fetch(api.my.stmt)) != 1) {  //  Fetch all rows
                 row++;
                 for (int i = 0; i < cols; i++)
                 {
@@ -769,6 +775,9 @@ public:
                     }
                 }
             }
+            if (rc == 1)
+                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
+
             for (int i = 0; i < cols; i++)   //  bind buffers
                 if ((**types).TypeDescriptor[i] == String) delete in_data[i].str;
 
@@ -777,7 +786,7 @@ public:
             if (mysql_stmt_close(api.my.stmt))
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
 #undef CASE
-            errnum = 0; errdata = ""; errstr = "SUCCESS"; ans = true;
+            errnum = 0; errdata = ""; errstr = "SUCCESS";
             break;
 #endif
 
@@ -795,7 +804,7 @@ public:
 #endif
         case ODBC:
         case SqlServer:
-            int rc; api.odbc.hBind = new std::variant<VAR_TYPES> [cols];
+            api.odbc.hBind = new std::variant<VAR_TYPES> [cols];
             for (SQLUSMALLINT i = 0; i < cols; i++)
             {
                 int t = (**types).TypeDescriptor[i];
