@@ -15,10 +15,11 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
-// #include "pch.h"
+#include "pch.h"
 
-#ifndef MYAPI
-#define MYAPI       //  MySQL C Connector
+#define SQL_LVPP_VERSION "sql_LVPP-2.0"
+#ifndef ODBCAPI
+//#define MYAPI       //  MySQL C Connector
 //#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 #endif
@@ -198,7 +199,7 @@ public:
         }
 
         type = t; errnum = 0; errstr = "SUCCESS";
-        if (ConnectionString.length() < 1) {errnum = -1; errstr = "Connection string may not be blank"; }
+        if (ConnectionString.length() < 1) {api.odbc.hDbc = NULL; errnum = -1; errstr = "Connection string may not be blank"; }
         else {
             switch (type)
             {
@@ -208,12 +209,14 @@ public:
 #ifdef ODBCAPI
             case ODBC:
             case SqlServer:
-                SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &(api.odbc.hEnv));
+               {SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &(api.odbc.hEnv));
                 SQLSetEnvAttr(api.odbc.hEnv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
                 SQLAllocHandle(SQL_HANDLE_DBC, api.odbc.hEnv, &(api.odbc.hDbc));
-                SQLRETURN ret;
-                ret = SQLDriverConnect(api.odbc.hDbc, NULL, (SQLCHAR*)ConnectionString.c_str(), SQL_NTS, NULL, 0, NULL, SQL_DRIVER_COMPLETE);
-                if (ret == SQL_ERROR) ODBC_ERROR(SQL_HANDLE_DBC, api.odbc.hDbc, ConnectionString);
+                string cs = ConnectionString;
+                if (user != "") cs += "UID=" + user + ";";
+                if (pw != "") cs += "PWD=" + pw + ";";
+                SQLRETURN rc = SQLDriverConnect(api.odbc.hDbc, NULL, (SQLCHAR*)cs.c_str(), SQL_NTS, NULL, 0, NULL, SQL_DRIVER_COMPLETE);
+                if (rc == SQL_ERROR) ODBC_ERROR(SQL_HANDLE_DBC, api.odbc.hDbc, cs);}
                 break;
 #endif
 
@@ -264,6 +267,7 @@ public:
 #ifdef ODBCAPI
         case ODBC:
         case SqlServer:
+            if (api.odbc.hDbc == NULL) break;
             SQLDisconnect(api.odbc.hDbc);
             SQLFreeHandle(SQL_HANDLE_DBC, api.odbc.hDbc);
             SQLFreeHandle(SQL_HANDLE_ENV, api.odbc.hEnv);
@@ -301,7 +305,8 @@ public:
 #ifdef ODBCAPI
         case ODBC:
         case SqlServer:
-            return Execute("USE " + schema);
+            (void) Execute("USE " + schema);
+            return errnum;
             break;
 #endif
 
@@ -363,9 +368,9 @@ public:
         case SqlServer:
             {
             int rc;
-            rc = SQLAllocStmt(api.odbc.hDbc, &(api.odbc.hStmt));
+            rc = SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt));
             if (rc == SQL_ERROR) {ODBC_ERROR(SQL_HANDLE_DBC, api.odbc.hDbc, query); return -1;}
-            rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
+            rc = SQLExecDirect(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
             if (rc == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                  SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
@@ -398,7 +403,7 @@ public:
     }
 
     int Execute(string query) {  //  run query against connection and return num rows affected
-        errnum = -1; errdata = query; int ans = 0;
+        errnum = 0; errdata = query; int ans = 0;
         if (query.length() < 1) { errstr = "Query string may not be blank"; return -1; }
         switch (type)
         {
@@ -422,8 +427,7 @@ public:
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
             int rc; rc = SQLExecDirect(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-            if (rc == SQL_ERROR)
-                {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query); ans = -1;}
+            if (rc == SQL_ERROR) {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query); ans = -1;}
             else SQLRowCount(api.odbc.hStmt, (SQLLEN*)&ans);
             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt);
             break;
@@ -804,7 +808,6 @@ public:
 #endif
         case ODBC:
         case SqlServer:
-            api.odbc.hBind = new std::variant<VAR_TYPES> [cols];
             for (SQLUSMALLINT i = 0; i < cols; i++)
             {
                 int t = (**types).TypeDescriptor[i];
@@ -827,8 +830,8 @@ public:
                     if (StrBufLen) //  StrBufLen == 0 means don't bind, and use SQLGetData() after SQLFetch()
                     {
                         api.odbc.hBind[i] = (char*) new char[StrBufLen]; DataLen[i] = StrBufLen;
-                        rc = SQLBindCol(api.odbc.hStmt, i + 1, SQL_C_CHAR, &(api.odbc.hBind[i]),
-                            DataLen[i], &DataLen[i]);
+                        rc = SQLBindCol(api.odbc.hStmt, i + 1, (t == String ? SQL_C_CHAR: SQL_C_BINARY),
+                                    &(api.odbc.hBind[i]), DataLen[i], &(DataLen[i]));
                         if (rc == SQL_ERROR)
                         {
                             ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));
@@ -862,15 +865,14 @@ public:
             }
             while (rc  != SQL_NO_DATA)
             {
-                rc = SQLFetch(api.odbc.hStmt);
                 if (rc == SQL_ERROR)
                 {
                     ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "");
-                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
+                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;
                 }
                 //  allocate another row
-                DSSetHandleSize(results, sizeof(int32) * 2 + ++(row) * cols * sizeof(LStrHandle));
-                (**results).dimSizes[0] = row; (**results).dimSizes[1] = cols;
+                DSSetHandleSize(results, sizeof(int32) * 2 + (row + 1) * cols * sizeof(LStrHandle));
+                (**results).dimSizes[0] = (row + 1); (**results).dimSizes[1] = cols;
                 for (SQLUSMALLINT i = 0; i < cols; i++)
                 {
                     int t = (**types).TypeDescriptor[i];
@@ -893,11 +895,12 @@ public:
                     case String:
                     case Array:
                         if (StrBufLen)
-                            LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), DataLen[i]);
+                           {(**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + DataLen[i]);
+                            LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), DataLen[i]);}
                         else
                         {
                             SQLLEN FldLen; bool Init; Init = false;
-                            while ((rc = SQLGetData(api.odbc.hStmt, 2, SQL_C_BINARY, (char*) &(api.odbc.hBind[i]),
+                            while ((rc = SQLGetData(api.odbc.hStmt, i + 1, SQL_C_BINARY, (char*) &(api.odbc.hBind[i]),
                                     StrBlobLen,  &FldLen)) != SQL_NO_DATA)
                             {  
                                 if (FldLen == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
@@ -919,10 +922,12 @@ public:
                         break;
                     }
                 }
+                rc = SQLFetch(api.odbc.hStmt); row++;
             }
 #undef CASE            
-            for (SQLUSMALLINT i = 0; i < cols; i++) delete &(api.odbc.hBind[i]); 
-            delete[] api.odbc.hBind; delete[] DataLen;
+            //for (SQLUSMALLINT i = 0; i < cols; i++) delete &(api.odbc.hBind[i]); 
+            delete[] api.odbc.hBind;
+            delete[] DataLen;
             break;
 #endif
 
@@ -985,7 +990,7 @@ public:
             errnum = -1; errstr = "Unsupported RDBMS"; return -1;
             break;
         }
-        return row;
+        return (*rows = row);
     }
 
     uint canary_end = MAGIC;  //  check for buffer overrun and that we didn't delete object
@@ -1116,4 +1121,5 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         }
     }
 
+    char *Version() {return (char*) string(SQL_LVPP_VERSION).c_str();};
 }
