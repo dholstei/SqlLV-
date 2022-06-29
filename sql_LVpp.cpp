@@ -15,11 +15,11 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
-// #include "pch.h"
+ #include "pch.h"
 
 #define SQL_LVPP_VERSION "sql_LVPP-2.0"
-#ifndef MYAPI
-#define MYAPI       //  MySQL C Connector
+#ifndef ODBCAPI
+//#define MYAPI       //  MySQL C Connector
 //#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 #endif
@@ -48,6 +48,7 @@
 #include <iostream> // std::cout
 #include <list>     //  container of generated objects for error checking (avoid SEGFAULT)
 #include <variant>  //  container for results
+#include <array>  //  container for results
 
 using namespace std;
 
@@ -79,27 +80,22 @@ typedef Types** TypesHdl;
 #define LStrString(A) string((char*) (*A)->str, (*A)->cnt)
 void LV_str_cp(LStrHandle LV_string, string c_str)
 {
-    DSSetHandleSize(LV_string, sizeof(int) + (c_str.length() + 1) * sizeof(char));
+    DSSetHandleSize(LV_string, sizeof(int) + c_str.length() * sizeof(char));
     (*LV_string)->cnt = c_str.length();
-    strcpy((char*)(*LV_string)->str, c_str.c_str());
+    memcpy((char*)(*LV_string)->str, &(c_str[0]), c_str.length());
 }
-errno_t LV_str_cat(LStrHandle LV_string, string str)    //  concatenate C++ str to LSTR LV_string
+void LV_str_cat(LStrHandle LV_string, string str)    //  concatenate C++ str to LSTR LV_string
 {
     int n = (*LV_string)->cnt;
     DSSetHandleSize(LV_string, sizeof(int) + n + str.length());
     (*LV_string)->cnt = n + str.length();
-    #ifdef WIN
-    return strncpy_s((char*)(*LV_string)->str + n, str.length(), &str[0], str.length());
-    #else
-    (void) strncpy((char*)(*LV_string)->str + n, &str[0], str.length());
-    return 0;
-    #endif
+    memcpy((char*)(*LV_string)->str + n, &(str[0]), str.length());
 }
 void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 {
     DSSetHandleSize(LV_string, sizeof(int) + size * sizeof(char));
     (*LV_string)->cnt = size;
-    strncpy((char*)(*LV_string)->str, c_str, size);
+    memcpy((char*)(*LV_string)->str, c_str, size);
 }
 
 #endif
@@ -130,12 +126,12 @@ void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 
 class LvDbLib {       // LabVIEW MySQL Database class
 public:
-    uint canary_begin = MAGIC; //  check for buffer overrun and that we didn't delete object
+    uint canary_begin = MAGIC; //  check for buffer overrun/corruption
     int errnum;       // error number
     string errstr;    // error description
     string errdata;   // data which precipitated error
     string SQLstate;  // SQL state
-    uint16_t type;    // RDMS type, see enum db_type
+    uint16_t type;    // RDMS type, see enum db_type.h
     int StrBufLen = 256;    // initialize to 256
     int StrBlobLen = 4096;  // Used when StrBufLen==0 as buffer length for BLOBs
 
@@ -158,12 +154,12 @@ public:
         } mycpp;  //  MySQL Connector/C++
 #endif
 #ifdef ODBCAPI
-#define VAR_TYPES char, long, unsigned long, float, double, char*, string
+#define VAR_TYPES char, long, unsigned long, float, char*, double, string
         struct tODBC {
             SQLHENV     hEnv;
             SQLHDBC     hDbc;
             SQLHSTMT    hStmt;
-            std::variant<VAR_TYPES> *hBind;    //  array of any
+            variant<VAR_TYPES> *hBind;
         } odbc;  //  ODBC
 #endif
     } api;
@@ -660,6 +656,7 @@ public:
         errnum = 0; errdata = ""; int rc;
         SQLLEN *DataLen; DataLen = new SQLLEN[cols];
         int row = 0; //  row number
+        array<variant<VAR_TYPES>, 0> res; variant<VAR_TYPES> v;
 
         if (*rows > 0)  //  we know the number of rows before hand, otherwise we need to dynamically allocate on fetches
            {DSSetHandleSize(results, sizeof(int32) * 2 + *rows * cols * sizeof(LStrHandle));
@@ -795,8 +792,9 @@ public:
             {
                 int t = (**types).TypeDescriptor[i];
                 switch (t)
-                {
-                case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
+                {  //  any of these numeric type might overflow, that's what we'd like to catch
+                CASE(Boolean, char, SQL_C_BIT)
+                    break;
                 case  I8:
                 CASE(U8, char, SQL_C_CHAR)
                     break;
@@ -812,6 +810,8 @@ public:
                 case Array: //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
                     if (StrBufLen) //  StrBufLen == 0 means don't bind, and use SQLGetData() after SQLFetch()
                     {
+                        //v = variant(
+                        //res.fill(variant(string(StrBufLen, '\0'));
                         api.odbc.hBind[i] = (char*) new char[StrBufLen]; DataLen[i] = StrBufLen;
                         rc = SQLBindCol(api.odbc.hStmt, i + 1, (t == String ? SQL_C_CHAR: SQL_C_BINARY),
                                     &(api.odbc.hBind[i]), DataLen[i], &(DataLen[i]));
@@ -821,6 +821,7 @@ public:
                             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                         }
                     }
+                    //else { api.odbc.hBind[i] = string(StrBlobLen, '\0'); DataLen[i] = StrBlobLen; }
                     else {api.odbc.hBind[i] = (char*) new char[StrBlobLen]; DataLen[i] = StrBlobLen;}
                     break;
                 default:
@@ -882,16 +883,16 @@ public:
                             LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), DataLen[i]);}
                         else
                         {
-                            SQLLEN FldLen; bool Init; Init = false;
+                            SQLLEN FldLen = StrBlobLen; bool Init; Init = false;
                             while ((rc = SQLGetData(api.odbc.hStmt, i + 1, SQL_C_BINARY, (char*) &(api.odbc.hBind[i]),
                                     StrBlobLen,  &FldLen)) != SQL_NO_DATA)
                             {  
+                                if (rc == SQL_ERROR) break;
                                 if (FldLen == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
                                 if (!Init) (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32));
                                 Init = true;
-                                if ((errno = LV_str_cat((**results).elt[row * cols + i],
-                                    string((char*) &(api.odbc.hBind[i]), FldLen))) != 0)
-                                {errstr = "Concatenation failed."; return -1;}
+                                LV_str_cat((**results).elt[row * cols + i],
+                                    string((char*)&(api.odbc.hBind[i]), FldLen));
                             }
                             if (rc == SQL_ERROR)
                             {
@@ -908,7 +909,8 @@ public:
                 rc = SQLFetch(api.odbc.hStmt); row++;
             }
 #undef CASE            
-            //for (SQLUSMALLINT i = 0; i < cols; i++) delete &(api.odbc.hBind[i]); 
+            //for (SQLUSMALLINT i = 0; i < cols; i++)
+            //    ~(&api.odbc.hBind[i]); 
             delete[] api.odbc.hBind;
             delete[] DataLen;
             break;
@@ -976,7 +978,7 @@ public:
         return (*rows = row);
     }
 
-    uint canary_end = MAGIC;  //  check for buffer overrun and that we didn't delete object
+    uint canary_end = MAGIC;  //  check for buffer overrun/corruption
 };
 
 class ObjList
@@ -1006,7 +1008,7 @@ bool IsObj(LvDbLib* addr) //  check for corruption/validity, use <list> to track
     else { ObjectErr = true; ObjectErrStr = "Object memory corrupted"; return false; }
 }
 
-extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessary to prevent overloading name mangling
+extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessary to prevent overload name mangling
 
     LvDbLib* OpenDB(LStrHandle ConnectionString, LStrHandle user,
         LStrHandle pw, LStrHandle db, u_int16_t type) { //  open DB connection
@@ -1020,33 +1022,6 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         if (!IsObj(LvDbObj)) return -1;
         LvDbObj->SetSchema(LStrString(schema));
         return LvDbObj->errnum;
-    }
-
-    int SetBufLen(LvDbLib* LvDbObj, int len, char tBuf) { //  set string buffer length, set to zero (0) for blobs and other large strings for dynamic allocation
-        if (!IsObj(LvDbObj)) return -1;
-        switch (tBuf)
-        {
-        case 0:
-        default:
-            LvDbObj->StrBufLen = len;
-            break;
-        case 1:
-            LvDbObj->StrBlobLen = len;
-            break;
-        }
-        return 0;
-    }
-
-    int GetBufLen(LvDbLib* LvDbObj, char tBuf) { //  get string buffer length (to restore after retrieval of BLOB, etcetera)
-        if (!IsObj(LvDbObj)) return -1;
-        switch (tBuf)
-        {
-        case 0:
-        default:
-            return LvDbObj->StrBufLen;
-        case 1:
-            return LvDbObj->StrBlobLen;
-        }
     }
 
     int Execute(LvDbLib* LvDbObj, LStrHandle query) { //  run query against connection and return num rows affected
@@ -1078,16 +1053,12 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         else return rows;
     }
 
-    int Type(LvDbLib* LvDbObj) { //  get DB API type
-        if (!IsObj(LvDbObj)) return -1;
-        return LvDbObj->type;
-    }
-
     int CloseDB(LvDbLib* LvDbObj) { //  close DB connection and free memory
         if (!IsObj(LvDbObj)) return -1;
         myObjs.remove(LvDbObj); delete LvDbObj; return 0;
     }
 
+#if 1    //  the following are utility-ish functions
     void GetError(LvDbLib* LvDbObj, tLvDbErr* error) { //  get error info from LvDbLib object properties
         if (LvDbObj == NULL || ObjectErr) {
             if (!ObjectErr) return; //  no error
@@ -1104,5 +1075,38 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         }
     }
 
+    int Type(LvDbLib* LvDbObj) { //  get DB API type
+        if (!IsObj(LvDbObj)) return -1;
+        return LvDbObj->type;
+    }
+
+    int SetBufLen(LvDbLib* LvDbObj, int len, char tBuf) { //  set string buffer length, set to zero (0) for blobs and other large strings for dynamic allocation
+        if (!IsObj(LvDbObj)) return -1;
+        switch (tBuf)
+        {
+        case 0:
+        default:
+            LvDbObj->StrBufLen = len;
+            break;
+        case 1:
+            LvDbObj->StrBlobLen = len;
+            break;
+        }
+        return 0;
+    }
+
+    int GetBufLen(LvDbLib* LvDbObj, char tBuf) { //  get string buffer length (to restore after retrieval of BLOB, etcetera)
+        if (!IsObj(LvDbObj)) return -1;
+        switch (tBuf)
+        {
+        case 0:
+        default:
+            return LvDbObj->StrBufLen;
+        case 1:
+            return LvDbObj->StrBlobLen;
+        }
+    }
+
     char *Version() {return (char*) string(SQL_LVPP_VERSION).c_str();};
+#endif
 }
