@@ -15,11 +15,11 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
-#include "pch.h"
+// #include "pch.h"
 
 #define SQL_LVPP_VERSION "sql_LVPP-2.0"
-#ifndef ODBCAPI
-//#define MYAPI       //  MySQL C Connector
+#ifndef MYAPI
+#define MYAPI       //  MySQL C Connector
 //#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 #endif
@@ -340,14 +340,6 @@ public:
 #ifdef MYAPI
         case MySQL:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
-#if 0
-            if (mysql_real_query(api.my.con, query.c_str(), query.length()))
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-            if ((api.my.query_results = mysql_store_result(api.my.con)) == NULL)
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-
-            errnum = 0; errdata = ""; return mysql_affected_rows(api.my.con);
-#else
             if (!(api.my.stmt = mysql_stmt_init(api.my.con)))
                 {errnum = -1; errstr = "Out of memory"; return -1;}
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) //  Prepare statement
@@ -359,7 +351,6 @@ public:
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
                  mysql_stmt_close(api.my.stmt); return -1;}
             errnum = 0; errdata = ""; return 0;
-#endif
             break;
 #endif
 
@@ -684,7 +675,7 @@ public:
 #if 1 // CASE MACRO
 #define CASE(xTD, cType) case  xTD:\
           union {cType data; char str[sizeof(cType)];} xTD ## _;\
-          xTD ## _.data = in_data[i].xTD;\
+          xTD ## _.data = (cType) dtr[i];\
           (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
           LV_strncpy((**results).elt[row * cols + i], xTD ## _.str, sizeof(cType));
 #endif 
@@ -698,32 +689,40 @@ public:
             MYSQL_FIELD* fields; fields = mysql_fetch_fields(api.my.query_results);
 
             unsigned long* length; length = (long unsigned int*) new unsigned int[cols];
-            my_bool* error, * is_null;
+            my_bool* error, * is_null; char **bufs; bufs = new char* [cols];
             error = (my_bool*) new my_bool[cols]; is_null = (my_bool*) new my_bool[cols];
-            union _in_data
-            {
-                int8_t  I8;   u_int8_t  U8;
-                int16_t I16;  u_int16_t U16;
-                int32_t I32;  u_int32_t U32;
-                float   SGL;  double DBL;
-                char* str;
-            } *in_data; in_data = (_in_data*) new _in_data[cols];
+
+            #define MY_VARTYPES char, short, long, float, double, char*
+            variant<MY_VARTYPES> *dtr; dtr = new variant<MY_VARTYPES>[cols];
 
             for (int i = 0; i < cols; i++) {  //  bind buffers
                 api.my.bind[i].is_null = &is_null[i]; api.my.bind[i].error = &error[i];
                 api.my.bind[i].length = &length[i]; api.my.bind[i].buffer_type = fields[i].type;
                 switch (fields[i].type)
                 {
-                case MYSQL_TYPE_TINY ... MYSQL_TYPE_DOUBLE:
-                    api.my.bind[i].buffer = (char*)&(in_data[i]);
+                case MYSQL_TYPE_TINY:
+                    dtr[i] = (char) 0; api.my.bind[i].buffer = &(dtr[i]);
+                    break;
+                case MYSQL_TYPE_SHORT:
+                    dtr[i] = (short) 0; api.my.bind[i].buffer = &(dtr[i]);
+                    break;
+                case MYSQL_TYPE_LONG:
+                    dtr[i] = (long) 0; api.my.bind[i].buffer = &(dtr[i]);
+                    break;
+                    break;
+                case MYSQL_TYPE_FLOAT:
+                    dtr[i] = (float) 0; api.my.bind[i].buffer = &(dtr[i]);
+                    break;
+                case MYSQL_TYPE_DOUBLE:
+                    dtr[i] = (double) 0; api.my.bind[i].buffer = &(dtr[i]);
                     break;
                 case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
-                    in_data[i].str = (char*) new char[StrBufLen];
-                    api.my.bind[i].buffer = (char*)in_data[i].str;
+                    bufs[i] = new char [StrBufLen];
+                    dtr[i] = (char*) &(bufs[i]); api.my.bind[i].buffer = &(dtr[i]);
                     api.my.bind[i].buffer_length = StrBufLen;
                     break;
                 default:
-                    delete length; delete is_null; delete error; delete api.my.bind; delete in_data;
+                    delete length; delete is_null; delete error; delete api.my.bind; delete[] dtr;
                     errnum = -1; errstr = "Unsupported MySQL type: " + to_string(fields[i].type);
                     mysql_free_result(api.my.query_results); mysql_stmt_close(api.my.stmt);
                     return false;
@@ -747,33 +746,17 @@ public:
                         {
                         case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
                             break;
-                            CASE(I8, char)
-                                break;
-                            CASE(U16, u_int16_t)
-                                break;
-                            CASE(I16, int16_t)
-                                break;
-                            CASE(U32, u_int32_t)
-                                break;
-                            CASE(I32, int32)
-                                break;
-                            CASE(SGL, float)
-                                break;
-                            CASE(DBL, double)
-                                break;
                         case  String:
                         default:
                             (**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(0);
                             if (length[i] > StrBufLen)
                             {
-                                // char* data; data = new char[length[i]];
-                                delete[] in_data[i].str; in_data[i].str = new char[length[i]];
                                 int retval; if ((retval = mysql_stmt_fetch_column(api.my.stmt, api.my.bind, i, 0)) != 0)
                                     {errnum = retval; errstr = mysql_error(api.my.con); return false;}
                             }
                             else
                                 LV_str_cp((**results).elt[row * cols + i],
-                                    string(in_data[i].str, length[i]));
+                                    string((char *) &(dtr[i]), length[i]));
                             break;
                         }
                     }
@@ -783,9 +766,9 @@ public:
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
 
             for (int i = 0; i < cols; i++)   //  bind buffers
-                if ((**types).TypeDescriptor[i] == String) delete in_data[i].str;
+                if ((**types).TypeDescriptor[i] == String) delete[] dtr;
 
-            delete length; delete is_null; delete error; delete api.my.bind; delete in_data;
+            delete length; delete is_null; delete error; delete api.my.bind;
             mysql_free_result(api.my.query_results);
             if (mysql_stmt_close(api.my.stmt))
                 {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
