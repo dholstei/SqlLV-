@@ -15,7 +15,7 @@
 //         the resulting DB library would then be usable by all extensible (through DLLs), interpreting 
 //         languages.  Of course, the calling language would also have to delete these when through.
 //
- #include "pch.h"
+ //#include "pch.h"
 
 #define SQL_LVPP_VERSION "sql_LVPP-2.0"
 #ifndef ODBCAPI
@@ -47,8 +47,10 @@
 #include <stdio.h>
 #include <iostream> // std::cout
 #include <list>     //  container of generated objects for error checking (avoid SEGFAULT)
-#include <variant>  //  container for results
-#include <array>  //  container for results
+#include <variant>  //  container for field data
+#define VAR_TYPES char, long, unsigned long, float, char*, double, string
+#include <vector>   //  container for results
+#include <array>   //  container for results
 
 using namespace std;
 
@@ -91,11 +93,45 @@ void LV_str_cat(LStrHandle LV_string, string str)    //  concatenate C++ str to 
     (*LV_string)->cnt = n + str.length();
     memcpy((char*)(*LV_string)->str + n, &(str[0]), str.length());
 }
+void LV_str_cat(LStrHandle LV_string, char* str, int size)    //  concatenate C++ str to LSTR LV_string
+{
+    int n = (*LV_string)->cnt;
+    DSSetHandleSize(LV_string, sizeof(int) + ((*LV_string)->cnt = n + size));
+    //(*LV_string)->cnt = n + size;
+    memcpy((char*)(*LV_string)->str + n, str, size);
+}
 void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
 {
     DSSetHandleSize(LV_string, sizeof(int) + size * sizeof(char));
     (*LV_string)->cnt = size;
     memcpy((char*)(*LV_string)->str, c_str, size);
+}
+void LV_strncpy(LStrHandle LV_string, string str, int size)
+{
+    DSSetHandleSize(LV_string, sizeof(int) + size + 1);
+    (*LV_string)->cnt = size;
+    memcpy((char*)(*LV_string)->str, str.c_str(), size); ((*LV_string)->str)[size] = 0;
+}
+LStrHandle LVStr(string str)    //  convert string to new LV string handle
+{
+    LStrHandle l = (LStrHandle)DSNewHandle(sizeof(int32) + str.length());
+    (*l)->cnt = str.length();
+    memcpy((char*)(*l)->str, str.c_str(), str.length()); // ((*l)->str)[str.length()+1] = 0;
+    return l;
+}
+LStrHandle LVStr(string str, int size)
+{
+    LStrHandle l = (LStrHandle) DSNewHandle(sizeof(int32) + size);
+    (*l)->cnt = size;
+    memcpy((char*)(*l)->str, str.c_str(), size);
+    return l;
+}
+LStrHandle LVStr(char* str, int size)
+{
+    LStrHandle l = (LStrHandle)DSNewHandle(sizeof(int32) + size + 1);
+    (*l)->cnt = size;
+    memcpy((char*)(*l)->str, str, size); ((*l)->str)[size] = 0;
+    return l;
 }
 
 #endif
@@ -154,12 +190,10 @@ public:
         } mycpp;  //  MySQL Connector/C++
 #endif
 #ifdef ODBCAPI
-#define VAR_TYPES char, long, unsigned long, float, char*, double, string
         struct tODBC {
             SQLHENV     hEnv;
             SQLHDBC     hDbc;
             SQLHSTMT    hStmt;
-            variant<VAR_TYPES> *hBind;
         } odbc;  //  ODBC
 #endif
     } api;
@@ -361,7 +395,6 @@ public:
             if (rc == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, query);
                  SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
-            api.odbc.hBind = new std::variant<VAR_TYPES>[cols];
             return 0;
             }
             break;
@@ -654,9 +687,10 @@ public:
 
     int GetResults(int *rows, int cols, TypesHdl types, ResultSetHdl results) {  //  return results as LV flattened strings
         errnum = 0; errdata = ""; int rc;
-        SQLLEN *DataLen; DataLen = new SQLLEN[cols];
         int row = 0; //  row number
-        array<variant<VAR_TYPES>, 0> res; variant<VAR_TYPES> v;
+        vector<SQLLEN> DataLen(cols, NULL);
+        vector<char*> str(cols);
+        vector<variant<VAR_TYPES>> res(cols); // result set. MSVC has heartburn with initialization "(cols, (char) 0)"
 
         if (*rows > 0)  //  we know the number of rows before hand, otherwise we need to dynamically allocate on fetches
            {DSSetHandleSize(results, sizeof(int32) * 2 + *rows * cols * sizeof(LStrHandle));
@@ -777,13 +811,14 @@ public:
 #ifdef ODBCAPI
 #if 1   //  CASE() MACRO
 #define CASE(xTD, cType, sType)   case  xTD:\
-    api.odbc.hBind[i] = (cType) 0; DataLen[i] = sizeof(cType);\
-    rc = SQLBindCol(api.odbc.hStmt, i + 1, sType, &(api.odbc.hBind[i]),\
+    res[i] = (cType) 0; DataLen[i] = sizeof(cType);\
+    if (StrBufLen) rc = SQLBindCol(api.odbc.hStmt, i + 1, sType, &(res[i]),\
         sizeof(cType), &(DataLen[i]));\
+    else rc = 0;\
     if (rc == SQL_ERROR)\
     {\
         ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));\
-        SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;\
+        SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;\
     }
 #endif
         case ODBC:
@@ -810,24 +845,20 @@ public:
                 case Array: //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
                     if (StrBufLen) //  StrBufLen == 0 means don't bind, and use SQLGetData() after SQLFetch()
                     {
-                        //v = variant(
-                        //res.fill(variant(string(StrBufLen, '\0'));
-                        api.odbc.hBind[i] = (char*) new char[StrBufLen]; DataLen[i] = StrBufLen;
+                        str[i] = new char[StrBufLen]; DataLen[i] = StrBufLen;
                         rc = SQLBindCol(api.odbc.hStmt, i + 1, (t == String ? SQL_C_CHAR: SQL_C_BINARY),
-                                    &(api.odbc.hBind[i]), DataLen[i], &(DataLen[i]));
+                                    str[i], DataLen[i], &(DataLen[i]));
                         if (rc == SQL_ERROR)
                         {
                             ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));
                             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                         }
                     }
-                    //else { api.odbc.hBind[i] = string(StrBlobLen, '\0'); DataLen[i] = StrBlobLen; }
-                    else {api.odbc.hBind[i] = (char*) new char[StrBlobLen]; DataLen[i] = StrBlobLen;}
+                    else {str[i] = new char[StrBlobLen];  DataLen[i] = StrBlobLen;}
                     break;
                 default:
-                    for (SQLUSMALLINT k = 0; k < i; k++) delete &(api.odbc.hBind[k]);
                     errno = -1; errstr = "Unsupported data type: " + to_string(t);
-                    delete[] api.odbc.hBind; delete[] DataLen; return errno;
+                    return errno;
                     break;
                 }
 
@@ -835,10 +866,16 @@ public:
 #undef CASE
 
 #if 1   //  CASE() MACRO
-#define CASE(xTD, cType) \
+#define CASE(xTD, cType, sType) \
      case  xTD:\
-            (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32) + sizeof(cType));\
-            LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), sizeof(cType));
+            if (StrBufLen == 0){\
+                rc = SQLGetData(api.odbc.hStmt, i + 1, sType, &(res[i]), DataLen[i], & DataLen[i]);\
+                if (rc == SQL_ERROR)\
+                {\
+                    ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));\
+                    SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;\
+                }}\
+            (**results).elt[row * cols + i] = LVStr((char*) &(res[i]), sizeof(cType));
 #endif
 
             row = 0; rc = SQLFetch(api.odbc.hStmt);
@@ -862,43 +899,40 @@ public:
                     int t = (**types).TypeDescriptor[i];
                     switch (t)
                     {
-                    case  Boolean:  //  any of these numeric type might overflow, that's what we'd like to catch
-                    case  I8:
-                    CASE(U8, char)
+                    CASE(Boolean, char, SQL_C_BIT)
                         break;
-                    case I16:
-                    CASE(U16, u_int16_t)
+                    case  I8:
+                    CASE(U8, char, SQL_C_CHAR)
                         break;
                     case I32:
-                    CASE(U32, u_int32_t)
+                    CASE(U32, u_int32_t, SQL_C_ULONG)
                         break;
-                    CASE(SGL, float)
+                    CASE(SGL, float, SQL_C_FLOAT)
                         break;
-                    CASE(DBL, double)
+                    CASE(DBL, double, SQL_C_DOUBLE)
                         break;
                     case String:
                     case Array:
                         if (StrBufLen)
-                           {(**results).elt[row * cols + i] = (LStrHandle)DSNewHandle(sizeof(int32) + DataLen[i]);
-                            LV_strncpy((**results).elt[row * cols + i], (char*) &(api.odbc.hBind[i]), DataLen[i]);}
+                            (**results).elt[row * cols + i] = LVStr(str[i], DataLen[i]);
                         else
                         {
-                            SQLLEN FldLen = StrBlobLen; bool Init; Init = false;
-                            while ((rc = SQLGetData(api.odbc.hStmt, i + 1, SQL_C_BINARY, (char*) &(api.odbc.hBind[i]),
-                                    StrBlobLen,  &FldLen)) != SQL_NO_DATA)
+                            bool Init = true; SQLINTEGER RtnDataLen = DataLen[i];
+                            while ((rc = SQLGetData(api.odbc.hStmt, i + 1, SQL_C_BINARY, str[i],
+                                DataLen[i],  &RtnDataLen)) != SQL_NO_DATA)  //  DataLen[i] will be equal to SqlBlobLen until the last call
                             {  
                                 if (rc == SQL_ERROR) break;
-                                if (FldLen == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
-                                if (!Init) (**results).elt[row * cols + i] = (LStrHandle) DSNewHandle(sizeof(int32));
-                                Init = true;
-                                LV_str_cat((**results).elt[row * cols + i],
-                                    string((char*)&(api.odbc.hBind[i]), FldLen));
+                                if (DataLen[i] == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
+                                int NumBytes = (RtnDataLen > DataLen[i]) || (RtnDataLen == SQL_NO_TOTAL) ? DataLen[i] : RtnDataLen;
+                                if (Init) {(**results).elt[row * cols + i] = LVStr(str[i], NumBytes); Init = false;}
+                                else LV_str_cat((**results).elt[row * cols + i], str[i], NumBytes);
                             }
                             if (rc == SQL_ERROR)
                             {
                                 ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "");
                                 SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt);
-                                delete[] api.odbc.hBind; delete[] DataLen; return errno;
+                                for (int i=0; i<cols; i++) if (str[i] != NULL) delete str[i];
+                                return errno;
                             }
                         }
                         break;
@@ -909,10 +943,6 @@ public:
                 rc = SQLFetch(api.odbc.hStmt); row++;
             }
 #undef CASE            
-            //for (SQLUSMALLINT i = 0; i < cols; i++)
-            //    ~(&api.odbc.hBind[i]); 
-            delete[] api.odbc.hBind;
-            delete[] DataLen;
             break;
 #endif
 
@@ -975,6 +1005,7 @@ public:
             errnum = -1; errstr = "Unsupported RDBMS"; return -1;
             break;
         }
+        for (int i = 0; i < cols; i++) if (str[i] != NULL) delete str[i];
         return (*rows = row);
     }
 
