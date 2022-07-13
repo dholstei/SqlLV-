@@ -6,10 +6,10 @@
 
 # This variable contains the flags passed to cc.
 
-CC = gcc -g
-C++ = g++ -g
-CFLAGS = -m32 -fPIC -Di686
-CXXFLAGS = -m32 -std=gnu++17 -lstdc++
+CC = gcc
+C++ = g++
+CFLAGS = -g -m32 -fPIC -Di686
+CXXFLAGS = -g -m32 -std=gnu++17 -lstdc++
 
 # LabVIEW
 INCLUDES := $(INCLUDES)  -I/usr/local/lv71/cintools
@@ -21,10 +21,11 @@ ifeq ($(ODBC),1)	# UnixODBC API
 	LIBS := $(LIBS) /usr/lib/libodbc.so
 endif
 
-ifeq ($(MySQL),1)	# MySQL API
+ifeq ($(MySQL),1)	# MySQL API. NOTE: MariaDB client 3.1 didn't work
 	CXXFLAGS := $(CXXFLAGS) -DMYAPI
 	INCLUDES := $(INCLUDES) -I/usr/include/mysql/
-	LIBS := $(LIBS) /usr/lib/libmariadb.so.3
+	# LIBS := $(LIBS) /usr/lib/libmariadb.so.3
+	LIBS := $(LIBS) /home/danny/src/mysql-connector-c-6.1.11-linux-glibc2.12-i686/lib/libmysqlclient.a
 endif
 
 ifeq ($(MySQLCPP),1)	# MySQL C++/Connector
