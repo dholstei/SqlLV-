@@ -18,7 +18,7 @@
 
 #define SQL_LVPP_VERSION "sql_LVPP-2.0"
 #ifndef ODBCAPI
-#define MYAPI       //  MySQL C Connector
+//#define MYAPI       //  MySQL C Connector
 //#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 #endif
@@ -92,13 +92,18 @@ void LV_str_cat(LStrHandle LV_string, string str)    //  concatenate C++ str to 
     int n = (*LV_string)->cnt;
     DSSetHandleSize(LV_string, sizeof(int) + n + str.length());
     (*LV_string)->cnt = n + str.length();
-    memcpy((char*)(*LV_string)->str + n, &(str[0]), str.length());
+    memcpy((char*)(*LV_string)->str + n, str.c_str(), str.length());
 }
-void LV_str_cat(LStrHandle LV_string, char* str, int size)    //  concatenate C++ str to LSTR LV_string
+void LV_str_cat(LStrHandle LV_string, string str, int size)    //  concatenate C++ str to LSTR LV_string
 {
     int n = (*LV_string)->cnt;
     DSSetHandleSize(LV_string, sizeof(int) + ((*LV_string)->cnt = n + size));
-    //(*LV_string)->cnt = n + size;
+    memcpy((char*)(*LV_string)->str + n, str.c_str(), size);
+}
+void LV_str_cat(LStrHandle LV_string, char* str, int size)    //  concatenate C-style str to LSTR LV_string
+{
+    int n = (*LV_string)->cnt;
+    DSSetHandleSize(LV_string, sizeof(int) + ((*LV_string)->cnt = n + size));
     memcpy((char*)(*LV_string)->str + n, str, size);
 }
 void LV_strncpy(LStrHandle LV_string, char* c_str, int size)
@@ -115,23 +120,20 @@ void LV_strncpy(LStrHandle LV_string, string str, int size)
 }
 LStrHandle LVStr(string str)    //  convert string to new LV string handle
 {
-    LStrHandle l = (LStrHandle)DSNewHandle(sizeof(int32) + str.length());
-    (*l)->cnt = str.length();
-    memcpy((char*)(*l)->str, str.c_str(), str.length()); // ((*l)->str)[str.length()+1] = 0;
+    LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + str.length())) == NULL) return NULL;
+    memcpy((char*)(*l)->str, str.c_str(), ((*l)->cnt = str.length()));
     return l;
 }
 LStrHandle LVStr(string str, int size)
 {
-    LStrHandle l = (LStrHandle) DSNewHandle(sizeof(int32) + size);
-    (*l)->cnt = size;
-    memcpy((char*)(*l)->str, str.c_str(), size);
+    LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
+    memcpy((char*)(*l)->str, str.c_str(), ((*l)->cnt = size));
     return l;
 }
 LStrHandle LVStr(char* str, int size)
 {
-    LStrHandle l = (LStrHandle)DSNewHandle(sizeof(int32) + size);
-    (*l)->cnt = size;
-    memcpy((char*)(*l)->str, str, size); ((*l)->str)[size] = 0;
+    LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
+    memcpy((char*)(*l)->str, str, ((*l)->cnt = size));
     return l;
 }
 
@@ -861,8 +863,15 @@ public:
                             SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
                         }
                     }
-                    else {// str[i] = new char[StrBlobLen];
-                        DataLen[i] = StrBlobLen;}
+                    else 
+                       {DataLen[i] = 0;
+                        rc = SQLBindCol(api.odbc.hStmt, i + 1, (t == String ? SQL_C_CHAR: SQL_C_BINARY),
+                                    0, DataLen[i], &(DataLen[i]));
+                        if (rc == SQL_ERROR)
+                        {
+                            ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "Column " + to_string(i + 1) + "; type " + to_string(t));
+                            SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return false;
+                        }}
                     break;
                 default:
                     errnum = -1; errstr = "Unsupported data type: " + to_string(t);
@@ -877,6 +886,7 @@ public:
 #define CASE(xTD, cType, sType) \
      case  xTD:\
             if (StrBufLen == 0){\
+                DataLen[i] = sizeof(cType);\
                 rc = SQLGetData(api.odbc.hStmt, i + 1, sType, &(res[i]), DataLen[i], & DataLen[i]);\
                 if (rc == SQL_ERROR)\
                 {\
@@ -922,18 +932,22 @@ public:
                     case String:
                     case Array:
                         if (StrBufLen)
-                            (**results).elt[row * cols + i] = LVStr((char*) str[i].c_str(), DataLen[i]);
+                           {(**results).elt[row * cols + i] = LVStr((char*) str[i].c_str(), DataLen[i]);
+                            if (DataLen[i] > StrBufLen)
+                                {errnum = -1; errstr = "Truncated data, column:" + to_string(i + 1); return -1;}}
                         else
                         {
-                            bool Init = true; SQLINTEGER RtnDataLen = DataLen[i];
-                            while ((rc = SQLGetData(api.odbc.hStmt, i + 1, SQL_C_BINARY, (char*) str[i].c_str(),
+                            bool Init = true; SQLINTEGER RtnDataLen = StrBlobLen;
+                            DataLen[i] = RtnDataLen; string str = string(RtnDataLen, (char) 0);
+                            while ((rc = SQLGetData(api.odbc.hStmt, i + 1, (t == Array ? SQL_C_BINARY: SQL_C_CHAR), (char*) str.c_str(),
                                 DataLen[i], (SQLLEN*) &RtnDataLen)) != SQL_NO_DATA)  //  DataLen[i] will be equal to SqlBlobLen until the last call
                             {  
                                 if (rc == SQL_ERROR) break;
                                 if (DataLen[i] == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
-                                int NumBytes = (RtnDataLen > DataLen[i]) || (RtnDataLen == SQL_NO_TOTAL) ? DataLen[i] : RtnDataLen;
-                                if (Init) {(**results).elt[row * cols + i] = LVStr((char*) str[i].c_str(), NumBytes); Init = false;}
-                                else LV_str_cat((**results).elt[row * cols + i], (char*) str[i].c_str(), NumBytes);
+                                int NumBytes = (RtnDataLen > DataLen[i]) || (RtnDataLen == SQL_NO_TOTAL) ?
+                                    DataLen[i] - (t == Array ? 2 : 2) : RtnDataLen; //  "2" may correspond to wchar termination
+                                if (Init) {(**results).elt[row * cols + i] = LVStr(str, NumBytes); Init = false;}
+                                else LV_str_cat((**results).elt[row * cols + i], str, NumBytes);
                             }
                             if (rc == SQL_ERROR)
                             {
