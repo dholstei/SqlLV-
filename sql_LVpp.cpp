@@ -850,8 +850,8 @@ public:
                     break;
                 CASE(DBL, double, SQL_C_DOUBLE)
                     break;
-                case String:
-                case Array: //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
+                case String:    //  Looking at documentation, it appears SQL_C_BINARY and SQL_C_CHAR are interchangeable
+                case Array:     //  Though SQL_C_CHAR means terminating wchar NULL; SQL_C_BINARY, no terminator
                     if (StrBufLen) //  StrBufLen == 0 means don't bind, and use SQLGetData() after SQLFetch()
                     {
                         DataLen[i] = StrBufLen;
