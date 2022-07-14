@@ -945,7 +945,7 @@ public:
                                 if (rc == SQL_ERROR) break;
                                 if (DataLen[i] == SQL_NULL_DATA) break; //  it appears field == NULL, leave results string NULL
                                 int NumBytes = (RtnDataLen > DataLen[i]) || (RtnDataLen == SQL_NO_TOTAL) ?
-                                    DataLen[i] - (t == Array ? 2 : 2) : RtnDataLen; //  "2" may correspond to wchar termination
+                                    DataLen[i] - (t == Array ? 0 : 2) : RtnDataLen; //  "2" may correspond to wchar termination
                                 if (Init) {(**results).elt[row * cols + i] = LVStr(str, NumBytes); Init = false;}
                                 else LV_str_cat((**results).elt[row * cols + i], str, NumBytes);
                             }
