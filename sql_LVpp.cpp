@@ -17,8 +17,8 @@
 //
 
 #define SQL_LVPP_VERSION "sql_LVPP-2.0"
-#ifndef ODBCAPI
-//#define MYAPI       //  MySQL C Connector
+#ifndef MYAPI
+#define MYAPI       //  MySQL C API
 //#define MYCPPAPI    //  MySQL Connector/C++
 #define ODBCAPI     //  ODBC
 #endif
@@ -121,19 +121,19 @@ void LV_strncpy(LStrHandle LV_string, string str, int size)
 LStrHandle LVStr(string str)    //  convert string to new LV string handle
 {
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + str.length())) == NULL) return NULL;
-    memcpy((char*)(*l)->str, str.c_str(), ((*l)->cnt = str.length()));
+    memmove((char*)(*l)->str, str.c_str(), ((*l)->cnt = str.length()));
     return l;
 }
 LStrHandle LVStr(string str, int size)
 {
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
-    memcpy((char*)(*l)->str, str.c_str(), ((*l)->cnt = size));
+    memmove((char*)(*l)->str, str.c_str(), ((*l)->cnt = size));
     return l;
 }
 LStrHandle LVStr(char* str, int size)
 {
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
-    memcpy((char*)(*l)->str, str, ((*l)->cnt = size));
+    memmove((char*)(*l)->str, str, ((*l)->cnt = size));
     return l;
 }
 
@@ -177,6 +177,7 @@ public:
     union API
     {
 #ifdef MYAPI
+#define MYSQL_EXIT() {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
         struct tMY {
             MYSQL* con;           //  connection
             MYSQL_RES* query_results; //  result set
@@ -375,14 +376,8 @@ public:
             if (api.my.con == NULL) { errstr = "Connection closed"; return -1; }
             if (!(api.my.stmt = mysql_stmt_init(api.my.con)))
                 {errnum = -1; errstr = "Out of memory"; return -1;}
-            if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) //  Prepare statement
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-            api.my.bind = new MYSQL_BIND[cols];
-            if (mysql_stmt_execute(api.my.stmt))                    //  Execute
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
-            if (mysql_stmt_bind_param(api.my.stmt, api.my.bind))    //  bind results
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con);
-                 mysql_stmt_close(api.my.stmt); return -1;}
+            if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) MYSQL_EXIT()
+            if (mysql_stmt_execute(api.my.stmt)) MYSQL_EXIT();
             errnum = 0; errdata = ""; return 0;
             break;
 #endif
@@ -696,7 +691,7 @@ public:
         vector<variant<VAR_TYPES>> res(cols); // result set. MSVC has heartburn with initialization "(cols, (char) 0)"
 
         if (*rows > 0)  //  we know the number of rows before hand, otherwise we need to dynamically allocate on fetches
-           {DSSetHandleSize(results, sizeof(int32) * 2 + *rows * cols * sizeof(LStrHandle));
+           {DSSetHandleSize(results, sizeof(int32) * 2 + (*rows) * cols * sizeof(LStrHandle));
             (**results).dimSizes[0] = *rows; (**results).dimSizes[1] = cols;}
 
         switch (type)
@@ -707,7 +702,7 @@ public:
 #ifdef MYAPI
         case MySQL: {
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
-                { errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return false;}
+                MYSQL_EXIT();
             if (cols != mysql_num_fields(api.my.query_results))
                 {errnum = -1; errstr = "Data column number mismatch"; return false;}
 
@@ -716,6 +711,7 @@ public:
 
             vector<unsigned long> length(cols);
             vector<my_bool*> error(cols), is_null(cols);
+            api.my.bind = new MYSQL_BIND[cols];
 
             for (int i = 0; i < cols; i++) {  //  bind buffers
                 api.my.bind[i].is_null = is_null[i]; api.my.bind[i].error = error[i];
@@ -738,12 +734,14 @@ public:
                     res[i] = (double) 0; api.my.bind[i].buffer = &(res[i]);
                     break;
                 case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
-                    if (StrBufLen)
-                       {api.my.bind[i].buffer = (char*) str[i].c_str();
-                        api.my.bind[i].buffer_length = StrBufLen;}
+                    if (StrBufLen > 0)
+                    {
+                        str[i] = string(StrBufLen, (char) 0);
+                        api.my.bind[i].buffer = (char*) str[i].c_str();
+                        api.my.bind[i].buffer_length = str[i].length();
+                    }
                     else
-                       {api.my.bind[i].buffer = 0;
-                        api.my.bind[i].buffer_length = 0;}
+                       {api.my.bind[i].buffer = 0; api.my.bind[i].buffer_length = 0;}
                     break;
                 default:
                     delete api.my.bind;
@@ -753,16 +751,30 @@ public:
                     break;
                 }
             }
-            if (mysql_stmt_bind_result(api.my.stmt, api.my.bind))
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
+            int k = 1;
+            if (mysql_stmt_attr_set(api.my.stmt, STMT_ATTR_UPDATE_MAX_LENGTH, &k)) MYSQL_EXIT();
+            if (mysql_stmt_store_result(api.my.stmt)) MYSQL_EXIT();
 #define CASE(xTD, cType) case  xTD:\
             (**results).elt[row * cols + i] = LVStr((char*) &(res[i]), length[i]);
 
+            if (StrBufLen == 0) {
+            for (int i = 0; i < cols; i++) {
+                switch (fields[i].type)
+                {
+                    case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
+                        str[i] = string(fields[i].max_length, (char) 0);
+                        api.my.bind[i].buffer = (char*) str[i].c_str();
+                        api.my.bind[i].buffer_length = str[i].length();
+                        break;
+                    default:
+                        break;
+                }
+            }}
+            if (mysql_stmt_bind_result(api.my.stmt, api.my.bind)) MYSQL_EXIT();
             while ((rc = mysql_stmt_fetch(api.my.stmt)) != 1) {  //  Fetch all rows
                 if (rc == MYSQL_NO_DATA) break;
                 //  allocate another row
-                int err = mFullErr;
-                err = DSSetHandleSize(results, sizeof(int32) * 2 + (row+1) * cols * sizeof(LStrHandle));
+                DSSetHandleSize(results, sizeof(int32) * 2 + (row+1) * cols * sizeof(LStrHandle));
                 (**results).dimSizes[0] = (row+1); (**results).dimSizes[1] = cols;
 
                 for (int i = 0; i < cols; i++)
@@ -792,21 +804,18 @@ public:
                         case  String:
                         case  Array:
                         default:
-                            if (length[i] > StrBufLen)
-                            {
-                                int retval; if ((retval = mysql_stmt_fetch_column(api.my.stmt, api.my.bind, i, 0)) != 0)
-                                    {errnum = retval; errstr = mysql_error(api.my.con); return -1;}
-                            }
+                            if (length[i] > str[i].length())
+                                {errnum = -1; errstr = "Field data truncated, col: " + to_string(i + 1)
+                                                     + "Use BLOB feature or increase StrLenBuf to " + to_string(length[i]); return -1;}
                             else
-                                (**results).elt[row * cols + i] = LVStr((char*) str[i].c_str(), length[i]);
+                                (**results).elt[row * cols + i] = LVStr(str[i], length[i]);
                             break;
                         }
                     }
                 }
                 row++; 
             }
-            if (rc == 1)
-                {errnum = mysql_errno(api.my.con); errstr = mysql_error(api.my.con); return -1;}
+            if (rc == 1) MYSQL_EXIT();
 
             delete api.my.bind;
             mysql_free_result(api.my.query_results);
@@ -1026,7 +1035,6 @@ public:
             errnum = -1; errstr = "Unsupported RDBMS"; return -1;
             break;
         }
-        // for (int i = 0; i < cols; i++) if (str[i] != NULL) delete str[i];
         return (*rows = row);
     }
 
