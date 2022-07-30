@@ -120,18 +120,21 @@ void LV_strncpy(LStrHandle LV_string, string str, int size)
 }
 LStrHandle LVStr(string str)    //  convert string to new LV string handle
 {
+    if (str.length() == 0) return NULL;
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + str.length())) == NULL) return NULL;
     memmove((char*)(*l)->str, str.c_str(), ((*l)->cnt = str.length()));
     return l;
 }
 LStrHandle LVStr(string str, int size)
 {
+    if (size == 0) return NULL;
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
     memmove((char*)(*l)->str, str.c_str(), ((*l)->cnt = size));
     return l;
 }
 LStrHandle LVStr(char* str, int size)
 {
+    if (size == 0) return NULL;
     LStrHandle l; if ((l = (LStrHandle) DSNewHClr(sizeof(int32) + size)) == NULL) return NULL;
     memmove((char*)(*l)->str, str, ((*l)->cnt = size));
     return l;
@@ -709,7 +712,7 @@ public:
             /* Fetch result set meta information */
             MYSQL_FIELD* fields; fields = mysql_fetch_fields(api.my.query_results);
 
-            vector<unsigned long> length(cols);
+            vector<unsigned long> length(cols, 0);
             vector<my_bool*> error(cols), is_null(cols);
             api.my.bind = new MYSQL_BIND[cols];
 
@@ -811,6 +814,7 @@ public:
                                 (**results).elt[row * cols + i] = LVStr(str[i], length[i]);
                             break;
                         }
+                        length[i] = 0;  //  I suspect NULLs fields don't update this value to zero before the next fetch
                     }
                 }
                 row++; 
