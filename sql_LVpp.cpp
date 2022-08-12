@@ -141,6 +141,7 @@ LStrHandle LVStr(char* str, int size)
 }
 
 #endif
+#define UNIQ_STR(a) make_unique<string>(a)
 
 #ifdef MYAPI
 #include "/usr/include/mysql/mysql.h"
@@ -159,7 +160,7 @@ LStrHandle LVStr(char* str, int size)
 #define ODBC_ERROR(t, o, d) {\
                 SQLCHAR buf[1024]; SQLSMALLINT TextLength;\
                 SQLGetDiagRec(t, o, 1, 0, 0, buf, 1024, &TextLength);\
-                errstr = new string((char*)buf, TextLength); errnum = -1; errdata = new string(d);\
+                errstr = UNIQ_STR(string((char*)buf, TextLength)); errnum = -1; errdata = UNIQ_STR(string(d));\
                 }
 #endif
 
@@ -170,9 +171,9 @@ class LvDbLib {       // LabVIEW MySQL Database class
 public:
     uint canary_begin = MAGIC; //  check for buffer overrun/corruption
     int errnum;       // error number
-    string *errstr = NULL;    // error description
-    string *errdata = NULL;   // data which precipitated error
-    string *SQLstate = NULL;  // SQL state
+    std::unique_ptr<string> errstr;    // error description
+    std::unique_ptr<string> errdata;   // data which precipitated error
+    std::unique_ptr<string> SQLstate;  // SQL state
     uint16_t type;    // RDMS type, see enum db_type.h
     int StrBufLen = 256;    // initialize to 256
     int StrBlobLen = 4096;  // Used when StrBufLen==0 as buffer length for BLOBs
@@ -180,7 +181,7 @@ public:
     union API
     {
 #ifdef MYAPI
-#define MYSQL_EXIT() {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con)); return -1;}
+#define MYSQL_EXIT() {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con))); return -1;}
         struct tMY {
             MYSQL* con;           //  connection
             MYSQL_RES* query_results; //  result set
@@ -231,12 +232,12 @@ public:
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS, type = " + to_string(t));
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS, type = " + to_string(t)));
             break;
         }
 
-        type = t; errnum = 0; errstr = new string("SUCCESS");
-        if (ConnectionString.length() < 1) {api.odbc.hDbc = NULL; errnum = -1; errstr = new string("Connection string may not be blank"); }
+        type = t; errnum = 0; errstr = UNIQ_STR(string("SUCCESS"));
+        if (ConnectionString.length() < 1) {api.odbc.hDbc = NULL; errnum = -1; errstr = UNIQ_STR(string("Connection string may not be blank")); }
         else {
             switch (type)
             {
@@ -260,10 +261,10 @@ public:
 #ifdef MYAPI
             case MySQL:
                 if ((api.my.con = mysql_init(NULL)) == NULL)
-                    {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con)); break;}
+                    {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con))); break;}
                 if (mysql_real_connect(api.my.con, ConnectionString.c_str(),
                     user.c_str(), pw.c_str(), db.c_str(), 0, "/run/mysql/mysql.sock", 0) == NULL)
-                    {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con));}
+                    {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con)));}
                 StrBufLen = 256; break;
 #endif
 
@@ -276,14 +277,14 @@ public:
                 }
                 catch (sql::SQLException& e)
                 {
-                    errstr = new string(e.what()); errdata = new string(ConnectionString);
+                    errstr = UNIQ_STR(string(e.what())); errdata = UNIQ_STR(string(ConnectionString));
                     errnum = e.getErrorCode();
                 }
                 break;
 #endif
 
             default:
-                errnum = -1; errstr = new string("Unsupported RDBMS, type = " + to_string(t));
+                errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS, type = " + to_string(t)));
                 break;
             }
         }
@@ -320,14 +321,14 @@ public:
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS");
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS"));
             break;
         }
     }
 
     int SetSchema(string schema) {  //  set DB schema
-        errnum = 0; errdata = new string(schema);
-        if (schema.length() < 1) { errstr = new string("Schema string may not be blank"); return -1; }
+        errnum = 0; errdata = UNIQ_STR(string(schema));
+        if (schema.length() < 1) { errstr = UNIQ_STR(string("Schema string may not be blank")); return -1; }
         switch (type)
         {
         case NULL:
@@ -349,10 +350,10 @@ public:
 
 #ifdef MYCPPAPI
         case MySQLpp:
-            if (api.mycpp.con == NULL) { errstr = new string("Connection closed"); errnum = -1; return -1; }
+            if (api.mycpp.con == NULL) { errstr = UNIQ_STR(string("Connection closed")); errnum = -1; return -1; }
             try { api.mycpp.con->setSchema(schema); }
             catch (sql::SQLException& e) {
-                errstr = new string(e.what());
+                errstr = UNIQ_STR(string(e.what()));
                 errnum = e.getErrorCode();  SQLstate = e.getSQLState();
             }
             return !errnum ? 0 : -1;
@@ -360,15 +361,15 @@ public:
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS");
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS"));
             break;
         }
         return errnum;
     }
 
     int Query(string query, int cols) {  //  run query against connection and put results in res
-        errnum = -1; errdata = new string(query);
-        if (query.length() < 1) { errstr = new string("Query string may not be blank"); return -1; }
+        errnum = -1; errdata = UNIQ_STR(string(query));
+        if (query.length() < 1) { errstr = UNIQ_STR(string("Query string may not be blank")); return -1; }
         switch (type)
         {
         case NULL:
@@ -376,12 +377,12 @@ public:
 
 #ifdef MYAPI
         case MySQL:
-            if (api.my.con == NULL) { errstr = new string("Connection closed"); return -1; }
+            if (api.my.con == NULL) { errstr = UNIQ_STR(string("Connection closed")); return -1; }
             if (!(api.my.stmt = mysql_stmt_init(api.my.con)))
-                {errnum = -1; errstr = new string("Out of memory"); return -1;}
+                {errnum = -1; errstr = UNIQ_STR(string("Out of memory")); return -1;}
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length())) MYSQL_EXIT()
             if (mysql_stmt_execute(api.my.stmt)) MYSQL_EXIT();
-            errnum = 0; delete errdata; return 0;
+            errnum = 0; return 0;
             break;
 #endif
 
@@ -403,29 +404,29 @@ public:
 
 #ifdef MYCPPAPI
         case MySQLpp:
-            if (api.mycpp.con == NULL) { errstr = new string("Connection closed"); return -1; }
+            if (api.mycpp.con == NULL) { errstr = UNIQ_STR(string("Connection closed")); return -1; }
             try {
                 api.mycpp.stmt = api.mycpp.con->createStatement();
                 api.mycpp.res = api.mycpp.stmt->executeQuery(query);
                 errnum = 0; delete errstr; return api.mycpp.res->rowsCount();
             }
             catch (sql::SQLException& e) {
-                errstr = new string(e.what()); errdata = new string(query);
+                errstr = UNIQ_STR(string(e.what())); errdata = UNIQ_STR(string(query));
                 errnum = e.getErrorCode(); return -1;
             }
             break;
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS");
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS"));
             break;
         }
         return errnum;
     }
 
     int Execute(string query) {  //  run query against connection and return num rows affected
-        errnum = 0; errdata = new string(query); int ans = 0;
-        if (query.length() < 1) { errstr = new string("Query string may not be blank"); return -1; }
+        errnum = 0; errdata = UNIQ_STR(string(query)); int ans = 0;
+        if (query.length() < 1) { errstr = UNIQ_STR(string("Query string may not be blank")); return -1; }
         switch (type)
         {
         case NULL:
@@ -433,18 +434,18 @@ public:
 
 #ifdef MYAPI
         case MySQL:
-            if (api.my.con == NULL) { errstr = new string("Connection closed"); return -1; }
+            if (api.my.con == NULL) { errstr = UNIQ_STR(string("Connection closed")); return -1; }
             if (mysql_real_query(api.my.con, query.c_str(), query.length()))
-                {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con)); ans = -1;}
+                {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con))); ans = -1;}
             else
-                {errnum = 0; delete errdata; ans = mysql_affected_rows(api.my.con);}
+                {errnum = 0; ans = mysql_affected_rows(api.my.con);}
             break;
 #endif
 
 #ifdef ODBCAPI
         case ODBC:
         case SqlServer:
-            if (!api.odbc.hDbc) { errnum = -1; errstr = new string("No DB connection"); return -1; }
+            if (!api.odbc.hDbc) { errnum = -1; errstr = UNIQ_STR(string("No DB connection")); return -1; }
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
             int rc; rc = SQLExecDirect(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
@@ -462,23 +463,23 @@ public:
                 errnum = 0; delete errdata; errstr = "SUCCESS"; delete api.mycpp.stmt;
             }
             catch (sql::SQLException& e) {
-                errstr = new string(e.what()); errdata = new string(query);
+                errstr = UNIQ_STR(string(e.what())); errdata = UNIQ_STR(string(query));
                 errnum = e.getErrorCode();  ans = -1;
             }
             break;
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS");
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS"));
             break;
         }
         return ans;
     }
 
     int UpdatePrepared(string query, string v[], int rows, int cols, uint16_t ColsTD[]) {  //  UPDATE/INSERT etc with flattened LabVIEW data
-        errnum = -1; errdata = new string(query); int i, j, ans = -1;
-        if (query.length() < 1) { errstr = new string("Query string may not be blank"); return -1; }
-        if (rows * cols == 0) { errstr = new string("No data to post"); return -1; }
+        errnum = -1; errdata = UNIQ_STR(string(query)); int i, j, ans = -1;
+        if (query.length() < 1) { errstr = UNIQ_STR(string("Query string may not be blank")); return -1; }
+        if (rows * cols == 0) { errstr = UNIQ_STR(string("No data to post")); return -1; }
         switch (type)
         {
         case NULL:
@@ -493,12 +494,12 @@ public:
 
 
         case MySQL:
-            if (api.my.con == NULL) { errstr = new string("Connection closed"); return -1; }
+            if (api.my.con == NULL) { errstr = UNIQ_STR(string("Connection closed")); return -1; }
             api.my.stmt = mysql_stmt_init(api.my.con);
-            if (api.my.stmt == NULL) { errstr = new string("Out of memory"); return -1; }
+            if (api.my.stmt == NULL) { errstr = UNIQ_STR(string("Out of memory")); return -1; }
             if (mysql_stmt_prepare(api.my.stmt, query.c_str(), query.length()))
             {
-                errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con));
+                errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con)));
                 mysql_stmt_close(api.my.stmt); return -1;
             }
             MYSQL_BIND* bind; bind = new MYSQL_BIND[cols];
@@ -533,18 +534,18 @@ public:
                         bind[i].buffer_length = str_length; bind[i].is_null = 0; bind[i].length = &str_length;
                         break;
                     default:
-                        {errstr = new string("Data type (" + to_string(ColsTD[i]) + ") not supported"); return -1; }
+                        {errstr = UNIQ_STR(string("Data type (" + to_string(ColsTD[i]) + ") not supported")); return -1; }
                         break;
                     }
                 }
                 if ((errnum = mysql_stmt_bind_param(api.my.stmt, bind)) != 0)
-                    {errstr = new string(mysql_error(api.my.con)); mysql_stmt_close(api.my.stmt); return -1;}
+                    {errstr = UNIQ_STR(string(mysql_error(api.my.con))); mysql_stmt_close(api.my.stmt); return -1;}
                 if (mysql_stmt_execute(api.my.stmt) != 0)
-                    {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con));
+                    {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con)));
                      mysql_stmt_close(api.my.stmt); return -1;}
             }
             ans = j; mysql_stmt_close(api.my.stmt); delete bind;
-            {errnum = 0; errstr = new string("SUCCESS"); return ans; }
+            {errnum = 0; errstr = UNIQ_STR(string("SUCCESS")); return ans; }
             break;
 #undef CASE
 #endif
@@ -562,7 +563,7 @@ public:
 
         case ODBC:
         case SqlServer:
-            if (api.odbc.hDbc == NULL) { errnum = -1; errstr = new string("Connection closed"); return -1; }
+            if (api.odbc.hDbc == NULL) { errnum = -1; errstr = UNIQ_STR(string("Connection closed")); return -1; }
             if (SQLAllocHandle(SQL_HANDLE_STMT, api.odbc.hDbc, &(api.odbc.hStmt)) == SQL_ERROR)
                 {ODBC_ERROR(SQL_HANDLE_STMT, api.odbc.hStmt, "SQLAllocHandle"); return -1;}
             int rc; rc = SQLPrepare(api.odbc.hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
@@ -611,7 +612,7 @@ public:
                                     SQLFreeHandle(SQL_HANDLE_STMT, api.odbc.hStmt); return -1;}
                             break;
                         default:
-                            {errstr = new string("Data type (" + to_string(ColsTD[i]) + ") not supported"); return -1; }
+                            {errstr = UNIQ_STR(string("Data type (" + to_string(ColsTD[i]) + ") not supported")); return -1; }
                             break;
                     }
                 }
@@ -627,7 +628,7 @@ public:
 
 #ifdef MYCPPAPI
         case MySQLpp:
-            if (api.mycpp.con == NULL) { errnum = -1; errstr = new string("Connection closed"); return -1; }
+            if (api.mycpp.con == NULL) { errnum = -1; errstr = UNIQ_STR(string("Connection closed")); return -1; }
             try {
                 sql::PreparedStatement* pstmt; pstmt = api.mycpp.con->prepareStatement(query);
                 for (j = 0; j < rows; j++)
@@ -674,20 +675,20 @@ public:
                 delete pstmt; return j;
             }
             catch (sql::SQLException& e) {
-                errstr = new string(e.what()); errdata = new string(query);
+                errstr = UNIQ_STR(string(e.what())); errdata = UNIQ_STR(string(query));
                 errnum = e.getErrorCode();  return -1;
             }          break;
 #endif
 
         default:
-            errstr = new string("Unsupported RDBMS"); return -1;
+            errstr = UNIQ_STR(string("Unsupported RDBMS")); return -1;
             break;
         }
         return ans;
     }
 
     int GetResults(int *rows, int cols, TypesHdl types, ResultSetHdl results) {  //  return results as LV flattened strings
-        errnum = 0; delete errdata; int rc;
+        errnum = 0; int rc;
         int row = 0; //  row number
         vector<SQLLEN> DataLen(cols, 0);
         vector<string> str(cols, string(StrBufLen, (char) 0));
@@ -707,7 +708,7 @@ public:
             if (!(api.my.query_results = mysql_stmt_result_metadata(api.my.stmt))) //  Fetch result set meta information
                 MYSQL_EXIT();
             if (cols != mysql_num_fields(api.my.query_results))
-                {errnum = -1; errstr = new string("Data column number mismatch"); return false;}
+                {errnum = -1; errstr = UNIQ_STR(string("Data column number mismatch")); return false;}
 
             /* Fetch result set meta information */
             MYSQL_FIELD* fields; fields = mysql_fetch_fields(api.my.query_results);
@@ -722,20 +723,15 @@ public:
                 switch (fields[i].type)
                 {
                 case MYSQL_TYPE_TINY:
-                    res[i] = (char) 0; api.my.bind[i].buffer = &(res[i]);
-                    break;
+                    res[i] = (char) 0; api.my.bind[i].buffer = &(res[i]); break;
                 case MYSQL_TYPE_SHORT:
-                    res[i] = (short) 0; api.my.bind[i].buffer = &(res[i]);
-                    break;
+                    res[i] = (short) 0; api.my.bind[i].buffer = &(res[i]); break;
                 case MYSQL_TYPE_LONG:
-                    res[i] = (long) 0; api.my.bind[i].buffer = &(res[i]);
-                    break;
+                    res[i] = (long) 0; api.my.bind[i].buffer = &(res[i]); break;
                 case MYSQL_TYPE_FLOAT:
-                    res[i] = (float) 0; api.my.bind[i].buffer = &(res[i]);
-                    break;
+                    res[i] = (float) 0; api.my.bind[i].buffer = &(res[i]); break;
                 case MYSQL_TYPE_DOUBLE:
-                    res[i] = (double) 0; api.my.bind[i].buffer = &(res[i]);
-                    break;
+                    res[i] = (double) 0; api.my.bind[i].buffer = &(res[i]); break;
                 case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
                     if (StrBufLen > 0)
                     {
@@ -748,7 +744,7 @@ public:
                     break;
                 default:
                     delete api.my.bind;
-                    errnum = -1; errstr = new string("Unsupported MySQL type: " + to_string(fields[i].type));
+                    errnum = -1; errstr = UNIQ_STR(string("Unsupported MySQL type: " + to_string(fields[i].type)));
                     mysql_free_result(api.my.query_results); mysql_stmt_close(api.my.stmt);
                     return -1;
                     break;
@@ -758,19 +754,19 @@ public:
             if (mysql_stmt_attr_set(api.my.stmt, STMT_ATTR_UPDATE_MAX_LENGTH, &k)) MYSQL_EXIT();
             if (mysql_stmt_store_result(api.my.stmt)) MYSQL_EXIT();
 #define CASE(xTD, cType) case  xTD:\
-            (**results).elt[row * cols + i] = LVStr((char*) &(res[i]), length[i]);
+            (**results).elt[row * cols + i] = LVStr((char*) &(res[i]), sizeof(cType));
 
             if (StrBufLen == 0) {
             for (int i = 0; i < cols; i++) {
                 switch (fields[i].type)
                 {
-                    case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
-                        str[i] = string(fields[i].max_length, (char) 0);
-                        api.my.bind[i].buffer = (char*) str[i].c_str();
-                        api.my.bind[i].buffer_length = str[i].length();
-                        break;
-                    default:
-                        break;
+                case MYSQL_TYPE_TINY_BLOB ... MYSQL_TYPE_STRING:
+                    str[i] = string(fields[i].max_length, (char) 0);
+                    api.my.bind[i].buffer = (char*) str[i].c_str();
+                    api.my.bind[i].buffer_length = str[i].length();
+                    break;
+                default:
+                    break;
                 }
             }}
             if (mysql_stmt_bind_result(api.my.stmt, api.my.bind)) MYSQL_EXIT();
@@ -808,8 +804,8 @@ public:
                         case  Array:
                         default:
                             if (length[i] > str[i].length())
-                                {errnum = -1; errstr = new string("Field data truncated, col: " + to_string(i + 1)
-                                                     + "Use BLOB feature or increase StrLenBuf to " + to_string(length[i])); return -1;}
+                                {errnum = -1; errstr = UNIQ_STR(string("Field data truncated, col: " + to_string(i + 1)
+                                                     + "Use BLOB feature or increase StrLenBuf to " + to_string(length[i]))); return -1;}
                             else
                                 (**results).elt[row * cols + i] = LVStr(str[i], length[i]);
                             break;
@@ -824,8 +820,8 @@ public:
             delete api.my.bind;
             mysql_free_result(api.my.query_results);
             if (mysql_stmt_close(api.my.stmt))
-                {errnum = mysql_errno(api.my.con); errstr = new string(mysql_error(api.my.con)); return -1;}
-            errnum = 0; delete errdata; errstr = new string("SUCCESS");
+                {errnum = mysql_errno(api.my.con); errstr = UNIQ_STR(string(mysql_error(api.my.con))); return -1;}
+            errnum = 0; errstr = UNIQ_STR(string("SUCCESS"));
             break;}
 #undef CASE
 #endif
@@ -887,7 +883,7 @@ public:
                         }}
                     break;
                 default:
-                    errnum = -1; errstr = new string("Unsupported data type: " + to_string(t));
+                    errnum = -1; errstr = UNIQ_STR(string("Unsupported data type: " + to_string(t)));
                     return errnum;
                     break;
                 }
@@ -947,7 +943,7 @@ public:
                         if (StrBufLen)
                            {(**results).elt[row * cols + i] = LVStr((char*) str[i].c_str(), DataLen[i]);
                             if (DataLen[i] > StrBufLen)
-                                {errnum = -1; errstr = new string("Truncated data, column:" + to_string(i + 1)); return -1;}}
+                                {errnum = -1; errstr = UNIQ_STR(string("Truncated data, column:" + to_string(i + 1))); return -1;}}
                         else
                         {
                             bool Init = true; SQLINTEGER RtnDataLen = StrBlobLen;
@@ -1023,10 +1019,10 @@ public:
                     }
                     row++;
                 }
-                errnum = 0; delete errdata; errstr = new string("SUCCESS"); ans = true;
+                errnum = 0; delete errdata; errstr = UNIQ_STR(string("SUCCESS")); ans = true;
             }
             catch (sql::SQLException& e) {
-                errstr = new string(e.what());
+                errstr = UNIQ_STR(string(e.what()));
                 errnum = e.getErrorCode();  ans = false;
             }
 
@@ -1036,7 +1032,7 @@ public:
 #endif
 
         default:
-            errnum = -1; errstr = new string("Unsupported RDBMS"); return -1;
+            errnum = -1; errstr = UNIQ_STR(string("Unsupported RDBMS")); return -1;
             break;
         }
         return (*rows = row);
@@ -1132,9 +1128,9 @@ extern "C" {  //  functions to be called from LabVIEW.  'extern "C"' is necessar
         }
         else {
             error->errnum = LvDbObj->errnum;
-            LV_str_cp(error->errstr, *(LvDbObj->errstr));
-            LV_str_cp(error->errdata, *(LvDbObj->errdata));
-            LvDbObj->errnum = 0; delete LvDbObj->errstr; delete LvDbObj->errdata; delete LvDbObj->SQLstate; //  clear error info
+            if(LvDbObj->errstr != NULL) LV_str_cp(error->errstr, *(LvDbObj->errstr));
+            if(LvDbObj->errdata != NULL) LV_str_cp(error->errdata, *(LvDbObj->errdata));
+            LvDbObj->errnum = 0;    //  clear error info
         }
     }
 

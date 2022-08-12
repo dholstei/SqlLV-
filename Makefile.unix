@@ -10,6 +10,8 @@ CC = gcc
 C++ = g++
 CFLAGS = -g -m32 -fPIC -Di686
 CXXFLAGS = -g -m32 -std=gnu++17 -lstdc++
+OBJ = o
+SUFFIX = so
 
 # LabVIEW
 INCLUDES := $(INCLUDES)  -I/usr/local/lv71/cintools
@@ -43,7 +45,7 @@ DLLFLAGS = -shared -m32
 .SUFFIXES:
 .SUFFIXES: .c .cpp .o .so
 
-OBJECTS = sql_LV.$(OBJ)
+OBJECTS = sql_LVpp.$(OBJ)
 
 .c:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
@@ -59,22 +61,19 @@ OBJECTS = sql_LV.$(OBJ)
 
 all:    sql_LVpp.so
 
-sql_LVpp:	sql_LVpp.o
-	$(C++) $(CXXFLAGS) -o $@ $? $(MYSQLCPP_LIB) -ldl -lpthread -lresolv -lssl -lcrypto
-
 sql_LVpp.so: sql_LVpp.cpp
 	$(C++) $(CXXFLAGS) -shared -fPIC -o $@ $? $(INCLUDES) $(LIBS)\
 	 -ldl -lpthread -lresolv -lssl -lcrypto
 
-sql_LV.so:    $(OBJECTS)
-	$(CC) $(DLLFLAGS) -o $@ $(OBJECTS) $(LIBS)
+# sql_LVpp.so:    $(OBJECTS)
+# 	$(CC) $(DLLFLAGS) -o $@ $(OBJECTS) $(LIBS)
 
 sql_LV.dll:    $(OBJECTS)
 	$(LINKER) $(DLLFLAGS) $(OBJECTS) $(LIBS)
 
 clean:
 	 rm -f\
-	 sql_LV.$(SUFFIX) *.$(OBJ) sql_LVpp
+	 sql_LVpp.$(SUFFIX) *.$(OBJ)
 
 dist:
 	 tar cvfz sql_LV.tgz *.c *.h Makefile *.llb
