@@ -8,14 +8,24 @@
 
 CC = gcc
 C++ = g++
-CFLAGS = -g -m32 -fPIC -Di686
-CXXFLAGS = -g -m32 -std=gnu++17 -lstdc++
+
 OBJ = o
 SUFFIX = so
 
-# LabVIEW
+ifeq ($(X64), 1)	#	64-bit, release
+CFLAGS = -g -fPIC
+CXXFLAGS = -g -std=gnu++17 -lstdc++ # -DOpSystem=kLinux
+
+INCLUDES := $(INCLUDES)  -I/usr/local/natinst/LabVIEW-2022-64/cintools/
+LIBS := $(LIBS) /usr/local/lib64/liblvrt.so
+
+else				#	32-bit, debug
+CFLAGS = -g -m32 -fPIC -Di686
+CXXFLAGS = -g -m32 -std=gnu++17 -lstdc++
+
 INCLUDES := $(INCLUDES)  -I/usr/local/lv71/cintools
 LIBS := $(LIBS) /usr/local/lv71/AppLibs/liblvrt.so.7.1
+endif
 
 ifeq ($(ODBC),1)	# UnixODBC API
 	CXXFLAGS := $(CXXFLAGS) -DODBCAPI
@@ -23,11 +33,12 @@ ifeq ($(ODBC),1)	# UnixODBC API
 	LIBS := $(LIBS) /usr/lib/libodbc.so
 endif
 
-ifeq ($(MySQL),1)	# MySQL API. NOTE: MariaDB client 3.1 didn't work
+ifeq ($(MySQL),1)	# MySQL API
 	CXXFLAGS := $(CXXFLAGS) -DMYAPI
 	INCLUDES := $(INCLUDES) -I/usr/include/mysql/
-	# LIBS := $(LIBS) /usr/lib/libmariadb.so.3
-	LIBS := $(LIBS) /home/danny/src/mysql-connector-c-6.1.11-linux-glibc2.12-i686/lib/libmysqlclient.a
+	LIBS := $(LIBS) /usr/lib/libmariadb.so.3
+	# LIBS := $(LIBS) /home/danny/src/mysql-connector-c-6.1.11-linux-glibc2.12-i686/lib/libmysqlclient.a
+	# LIBS := $(LIBS) /usr/lib64/libmariadb.so.3
 endif
 
 ifeq ($(MySQLCPP),1)	# MySQL C++/Connector
